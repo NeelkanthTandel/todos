@@ -23,6 +23,8 @@
   const frame = document.getElementById("app");
   const log = document.getElementById("log");
   const sleep = ms => new Promise(r => setTimeout(r, ms));
+  // Headless runs use virtual time, so fixed sleeps can finish before real work like reading a file.
+  async function waitFor(cond, tries = 500) { for (let i = 0; i < tries && !cond(); i++) await sleep(10); return cond(); }
   let failures = 0, passes = 0;
 
   function check(name, ok, detail) {
@@ -50,12 +52,13 @@
     $("addForm").requestSubmit();
   }
   async function importFile(content) {
+    const shown = $("toastMsg").textContent;
     const dt = new (win().DataTransfer)();
     dt.items.add(new (win().File)([content], "backup.json", { type: "application/json" }));
     const input = $("importFile");
     input.files = dt.files;
     input.dispatchEvent(new (win().Event)("change"));
-    await sleep(200);
+    await waitFor(() => $("toastMsg").textContent !== shown); // the import finished and said so
   }
 
   try {
