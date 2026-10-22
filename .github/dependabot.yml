@@ -1,4 +1,4 @@
-# Weekly pull requests for the pinned GitHub Actions and the nginx base image.
+# Keeps the pinned GitHub Actions up to date with weekly pull requests.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -8,7 +8,3 @@ updates:
     groups:
       actions:
         patterns: ["*"]
-  - package-ecosystem: docker
-    directory: /
-    schedule:
-      interval: weekly

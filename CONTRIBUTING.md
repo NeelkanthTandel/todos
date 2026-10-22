@@ -20,12 +20,11 @@ Your local copy has its own `localStorage` (it's a different origin from the liv
 
 | File | What it does |
 | --- | --- |
-| `public/index.html` | Markup, and the Content Security Policy for GitHub Pages |
+| `public/index.html` | Markup, and the Content Security Policy |
 | `public/app.js` | The board: lanes, drag and drop, list parsing, undo/redo, shortcuts, export/import |
 | `public/storage.js` | Where todos are kept: localStorage always, plus an optional HTTP mirror. The API contract is at the top. |
 | `public/config.js` | Per-deploy settings |
 | `public/styles.css` | Styles, light and dark |
-| `nginx/`, `Dockerfile` | The self-hosted image |
 | `tests/smoke.html` | End-to-end checks that drive the app in an iframe |
 
 ## Before you open a pull request
@@ -35,12 +34,12 @@ Your local copy has its own `localStorage` (it's a different origin from the liv
 - UI changes include a before/after screenshot in the PR, in light and dark mode if colours changed.
 - One topic per PR. Small PRs get reviewed faster.
 
-CI also runs `node --check`, [html-validate](https://html-validate.org/) and a Docker build on every PR.
+CI also runs `node --check` and [html-validate](https://html-validate.org/) on every PR.
 
 ## Code guidelines
 
 - Keep it dependency-free: plain HTML, CSS and JavaScript, no frameworks, no build step, no CDN links.
-- **No third-party requests.** No trackers, analytics, remote fonts or scripts. The Content Security Policy blocks them anyway, both in `public/index.html` and in `nginx/security-headers.conf` (keep the two in step).
+- **No third-party requests.** No trackers, analytics, remote fonts or scripts. The Content Security Policy in `public/index.html` blocks them anyway.
 - Never put user text into `innerHTML`. Use `textContent`, or `esc()` for the few attribute strings built as HTML.
 - Anything read from localStorage, an imported file or the server goes through `normalize()` in `app.js`.
 - If you change the saved data shape, keep old data loading (`normalize()` fills gaps) and update the contract in `storage.js` and the README.

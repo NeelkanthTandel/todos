@@ -26,10 +26,3 @@ jobs:
         run: npx --yes html-validate@11.16.2 public/index.html tests/smoke.html
       - name: Smoke test in headless Chrome
         run: tests/run.sh
-      - name: Docker image builds and serves with security headers
-        run: |
-          docker build -t todos .
-          docker run -d --rm -p 8080:8080 --name todos todos
-          for _ in $(seq 1 30); do curl -fs http://127.0.0.1:8080/ >/dev/null && break; sleep 1; done
-          curl -fsI http://127.0.0.1:8080/ | tee /dev/stderr | grep -qi '^content-security-policy:'
-          docker rm -f todos

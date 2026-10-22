@@ -2,8 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<!-- Same policy nginx.conf sends as a header (GitHub Pages can't send headers). Using an API on another
-     origin? Add it to connect-src here and in nginx/security-headers.conf. -->
+<!-- Only this site's own files and requests are allowed. Using an API on another origin? Add it to connect-src. -->
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
