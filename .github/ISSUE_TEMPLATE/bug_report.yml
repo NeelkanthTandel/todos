@@ -31,7 +31,7 @@ body:
       label: Where are you running it?
       options:
         - todos.always17.com
-        - My own copy (Docker / Dokploy)
+        - My own hosted copy
         - Locally from source
   - type: textarea
     id: extra

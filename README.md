@@ -71,20 +71,11 @@ python3 -m http.server 8080 -d public
 
 Then open http://localhost:8080.
 
-### Docker / Dokploy
+### Host your own copy
 
-The `Dockerfile` serves `public/` with an unprivileged nginx on port **8080**. It also sends security headers (Content Security Policy, `X-Frame-Options`, `nosniff`, `Referrer-Policy`):
+`public/` is the whole site, so any static host works: publish that folder, with no build command.
 
-```bash
-docker build -t todos .
-docker run -p 8080:8080 todos
-```
-
-On Dokploy, create an **Application** from this repo with **Build Type: Dockerfile**, set the container port to `8080`, and attach a domain.
-
-### GitHub Pages
-
-`.github/workflows/pages.yml` publishes `public/` whenever it changes on `main`. In a fork, set **Settings → Pages → Source** to **GitHub Actions**.
+On GitHub Pages, `.github/workflows/pages.yml` already publishes `public/` whenever it changes on `main`. In a fork, set **Settings → Pages → Source** to **GitHub Actions**.
 
 Give it its own domain or subdomain if you can. Every project page under `you.github.io` shares one `localStorage`, so another page there could read your todos. Keys are prefixed with `namespace` from `public/config.js` to avoid collisions, but that doesn't keep the data private.
 
@@ -102,7 +93,7 @@ The app never talks to a database directly. It always keeps the `localStorage` c
 - **Mongo:** one document per user, `{ _id: userId, items: [...], updated }`, written with `replaceOne(..., { upsert: true })`.
 - **Existing browser data moves over automatically.** On first connect, if the server answers `404` (or an empty list with `updated: 0`) and the browser has todos, the app uploads them. Changes made while offline are uploaded when the server is reachable again.
 - **A newer server list wins.** When the tab regains focus, the app fetches the list and takes it if its `updated` is newer than what this browser last saw.
-- **Run the API on the same origin.** Use the commented `location /api/` block in [`nginx/default.conf`](nginx/default.conf); that avoids CORS and keeps cookies simple. An exported JSON file can seed the table, since `items` has exactly the shape the API stores.
+- **Run the API on the same origin as the site** (for example behind the same domain's `/api` path). That avoids CORS and keeps cookies simple. An exported JSON file can seed the table, since `items` has exactly the shape the API stores.
 
 ## Contributing
 

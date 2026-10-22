@@ -1,4 +1,4 @@
-// Deploy-time settings. Edit this file (or overwrite it in your container) per environment.
+// Deploy-time settings. Edit this file per deployment.
 window.TODO_CONFIG = {
   // "local": data lives only in this browser's localStorage.
   // "http":  also mirror to a server at apiBase (see the contract at the top of storage.js).
