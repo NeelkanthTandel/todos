@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Same policy nginx.conf sends as a header (GitHub Pages can't send headers). Using an API on another
+     origin? Add it to connect-src here and in nginx/security-headers.conf. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:; connect-src 'self'; manifest-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="description" content="A todo board sorted by heat: what's boiling over, simmering, on the back burner, or still in the fridge.">
+<meta name="color-scheme" content="light dark">
+<title>Todos</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 14 13'%3E%3Crect x='0' y='8' width='3.4' height='5' rx='1' fill='%23d6451b'/%3E%3Crect x='5' y='4' width='3.4' height='9' rx='1' fill='%23d6451b'/%3E%3Crect x='10' y='0' width='3.4' height='13' rx='1' fill='%23d6451b'/%3E%3C/svg%3E">
+<link rel="preload" href="fonts/SchibstedGrotesk-latin.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <h1>Todos <small id="summary"></small></h1>
+    <div class="top-acts">
+      <button type="button" class="ghost-btn" id="exportBtn" title="Download all todos as a JSON file">Export</button>
+      <button type="button" class="ghost-btn" id="importBtn" title="Add todos from an exported JSON file">Import</button>
+      <input type="file" id="importFile" accept="application/json,.json" hidden>
+      <button type="button" class="done-btn" id="doneBtn" aria-haspopup="dialog" aria-controls="panel">Done <span class="n" id="doneN">0</span></button>
+    </div>
+  </header>
+
+  <form class="composer" id="addForm" autocomplete="off">
+    <textarea id="new" rows="1" placeholder="What needs doing? Paste a list to add many at once" aria-label="New todo" aria-describedby="multi" enterkeyhint="done"></textarea>
+    <div class="pick" id="pick" role="radiogroup" aria-label="Priority"></div>
+    <button type="submit" class="add-btn" id="addBtn" disabled>Add</button>
+  </form>
+  <p class="multi" id="multi" hidden></p>
+
+  <main class="board" id="board"></main>
+
+  <footer class="keys">
+    <span><kbd>/</kbd> new todo</span>
+    <span class="k"><kbd>Alt</kbd><kbd>1</kbd>–<kbd>4</kbd> pick heat while typing</span>
+    <span class="k">Hover a todo: <kbd>1</kbd>–<kbd>4</kbd> move</span>
+    <span class="k"><kbd>S</kbd> in progress</span>
+    <span class="k"><kbd>X</kbd> done</span>
+    <span class="k"><kbd>E</kbd> edit</span>
+    <span class="k"><kbd>F</kbd> expand group</span>
+    <span class="k"><kbd>Ctrl</kbd><kbd>Z</kbd> undo anything</span>
+    <span class="k"><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> navigate</span>
+    <span class="status" id="status"></span>
+  </footer>
+</div>
+
+<div class="scrim" id="scrim"></div>
+<aside class="panel" id="panel" role="dialog" aria-modal="true" aria-labelledby="panelTitle" inert>
+  <div class="panel-head">
+    <h2 id="panelTitle">Done</h2>
+    <button type="button" class="clear" id="clearDone">Clear all</button>
+    <button type="button" class="act" id="closePanel" aria-label="Close"><svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3.5 3.5l7 7M10.5 3.5l-7 7"/></svg></button>
+  </div>
+  <div class="panel-body" id="panelBody"></div>
+</aside>
+
+<div class="menu" id="menu" role="menu" hidden></div>
+<div class="toast" id="toast" role="status"><span id="toastMsg"></span><button type="button" id="undo">Undo</button></div>
+<div class="sr" aria-live="polite" id="live"></div>
+
+<script src="config.js"></script>
+<script src="storage.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

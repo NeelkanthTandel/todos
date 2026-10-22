@@ -1,0 +1,4 @@
+{
+  "extends": ["html-validate:recommended"],
+  "rules": { "doctype-style": "off" }
+}

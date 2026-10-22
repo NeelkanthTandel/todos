@@ -1,0 +1,40 @@
+name: Bug report
+description: Something isn't working as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Paste a list into the box …
+        2. …
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and version
+      placeholder: e.g. Chrome 131 on macOS, Safari on iOS 18
+    validations:
+      required: true
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where are you running it?
+      options:
+        - todos.always17.com
+        - My own copy (Docker / Dokploy)
+        - Locally from source
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots or an export
+      description: An exported JSON file helps with data bugs. Please remove anything private first.

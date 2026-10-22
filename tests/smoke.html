@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Todos smoke test</title>
+<style>
+  body { font: 14px/1.5 ui-monospace, monospace; margin: 16px; }
+  iframe { width: 1200px; height: 700px; border: 1px solid #ccc; }
+  .pass { color: #186b2b; } .fail { color: #b4232f; font-weight: bold; }
+</style>
+</head>
+<body>
+<!--
+  Drives the real app in an iframe and checks the main flows end to end.
+  Serve the repo root (not public/) and open /tests/smoke.html, or run tests/run.sh for a headless pass.
+  It uses its own localStorage namespace-free origin data, so run it on a dev server, not your real site.
+-->
+<pre id="result">RUNNING</pre>
+<ol id="log"></ol>
+<iframe id="app" title="App under test"></iframe>
+<script>
+(async () => {
+  const frame = document.getElementById("app");
+  const log = document.getElementById("log");
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  let failures = 0, passes = 0;
+
+  function check(name, ok, detail) {
+    const li = document.createElement("li");
+    li.className = ok ? "pass" : "fail";
+    li.textContent = (ok ? "ok   " : "FAIL ") + name + (ok || detail === undefined ? "" : " — " + detail);
+    log.append(li);
+    ok ? passes++ : failures++;
+  }
+  function load() {
+    return new Promise(resolve => {
+      frame.onload = () => resolve();
+      frame.src = "../public/index.html?" + Date.now();
+    });
+  }
+  const win = () => frame.contentWindow;
+  const doc = () => frame.contentDocument;
+  const $ = id => doc().getElementById(id);
+  const rows = lane => [...doc().querySelectorAll("#list-" + lane + " li[data-id]")].map(li => li.querySelector(".text").textContent);
+  const stored = () => JSON.parse(localStorage.getItem("todos.v1") || "[]");
+  function type(text) {
+    const ta = $("new");
+    ta.value = text;
+    ta.dispatchEvent(new (win().Event)("input"));
+    $("addForm").requestSubmit();
+  }
+  async function importFile(content) {
+    const dt = new (win().DataTransfer)();
+    dt.items.add(new (win().File)([content], "backup.json", { type: "application/json" }));
+    const input = $("importFile");
+    input.files = dt.files;
+    input.dispatchEvent(new (win().Event)("change"));
+    await sleep(200);
+  }
+
+  try {
+    // Make sure the iframe gets the files on disk, not ones the browser cached from an earlier run.
+    for (const f of ["index.html", "config.js", "storage.js", "app.js", "styles.css"]) await fetch("../public/" + f, { cache: "reload" });
+    for (const k of Object.keys(localStorage)) if (k.startsWith("todos.")) localStorage.removeItem(k);
+
+    // A corrupted saved value must not take the page down.
+    localStorage.setItem("todos.v1", '{"not":"a list"}');
+    await load(); await sleep(100);
+    check("survives a corrupted saved list", doc().querySelectorAll(".lane").length === 4 && rows("n").length === 0);
+    localStorage.removeItem("todos.v1");
+    await load(); await sleep(100);
+
+    check("board renders four lanes", doc().querySelectorAll(".lane").length === 4);
+    check("starts empty", stored().length === 0 && $("doneN").textContent === "0");
+
+    // Add one todo with the heat picked by Alt+2 (Simmering).
+    $("new").value = "Water the plants";
+    $("new").dispatchEvent(new (win().KeyboardEvent)("keydown", { key: "2", code: "Digit2", altKey: true, bubbles: true }));
+    $("addForm").requestSubmit();
+    check("adds a todo to the picked lane", rows("m").join() === "Water the plants", JSON.stringify(rows("m")));
+
+    // Paste a list: markers stripped, [x] lands in Done, the rest goes to the fridge.
+    type("- buy milk\n- [x] call the bank\n2. write README");
+    check("pasted list splits into todos", rows("n").join("|") === "buy milk|write README", JSON.stringify(rows("n")));
+    check("[x] items count as done", $("doneN").textContent === "1", $("doneN").textContent);
+
+    // Reload: everything comes back from localStorage.
+    await load(); await sleep(100);
+    check("survives a reload", rows("m").length === 1 && rows("n").length === 2 && $("doneN").textContent === "1");
+
+    // Tick a todo done.
+    doc().querySelector("#list-n li[data-id] .check").click();
+    await sleep(50);
+    check("ticking marks it done", $("doneN").textContent === "2" && stored().filter(t => t.done).length === 2);
+
+    // Export: capture the download instead of saving it.
+    let saved = null;
+    const A = win().HTMLAnchorElement.prototype, click = A.click;
+    A.click = function () { saved = { href: this.href, name: this.download }; };
+    $("exportBtn").click();
+    A.click = click;
+    const exported = saved && JSON.parse(await (await fetch(saved.href)).text());
+    check("export downloads every todo", exported && exported.app === "todos" && exported.items.length === 4, saved && saved.name);
+
+    // Import a crafted file: markup must show as text, bad rows are skipped, ids merge.
+    const before = stored().length;
+    const evil = "<img src=x onerror=\"parent.__xss=1\">";
+    await importFile(JSON.stringify({ items: [
+      { id: "imp1", text: evil, done: false, prio: "h", created: 1 },
+      { id: "imp2", text: "unknown lane", done: false, prio: "zzz", created: 2 },
+      { id: 42, text: "bad id" }, { text: "no id" }, null,
+      { id: 'q"]', text: "quote in id" }, { id: "imp2", text: "duplicate id" }, { id: "imp3", text: "   " },
+    ] }));
+    await sleep(100);
+    check("import adds valid rows only", stored().length === before + 2, stored().length + " vs " + (before + 2));
+    check("imported markup renders as text", rows("h").includes(evil) && !doc().querySelector("#list-h img") && !window.__xss);
+    check("unknown lane falls back to the fridge", rows("n").includes("unknown lane"));
+    check("crafted, duplicate and blank rows are skipped", !rows("n").includes("quote in id") && !rows("n").includes("duplicate id"));
+
+    // Undo from the toast reverts the whole import.
+    $("undo").click();
+    await sleep(50);
+    check("undo reverts the import", stored().length === before && rows("h").length === 0);
+
+    await importFile("not json");
+    check("rejects a non-JSON file", $("toastMsg").textContent.includes("isn't a todos export"), $("toastMsg").textContent);
+
+    // Another tab saves: this tab shows its list without a reload.
+    const other = [{ id: "tab2", text: "from another tab", done: false, prio: "l", created: 9 }];
+    win().dispatchEvent(new (win().StorageEvent)("storage", { key: "todos.v1", newValue: JSON.stringify(other) }));
+    await sleep(50);
+    check("picks up another tab's list", rows("l").join() === "from another tab" && rows("n").length === 0, JSON.stringify(rows("l")));
+  } catch (e) {
+    check("no exceptions", false, e && e.stack || String(e));
+  }
+  for (const k of Object.keys(localStorage)) if (k.startsWith("todos.")) localStorage.removeItem(k);
+  document.getElementById("result").textContent = (failures ? "FAIL" : "PASS") + " " + passes + "/" + (passes + failures);
+})();
+</script>
+</body>
+</html>
