@@ -22,6 +22,7 @@
 - **Undo anything** with `Ctrl/⌘+Z`, redo with `Ctrl/⌘+Shift+Z`: adds, deletes, moves, edits, imports, clearing Done.
 - **Keyboard first.** Shortcuts work on the focused todo, or on the one under your mouse.
 - **Export and import** a JSON backup to move between browsers or devices.
+- **Clipboard suggestions** (Chrome, Edge, Brave; off until you turn them on). Copy something, come back to Todos, and it's waiting in the box, selected: `Enter` adds it; `Backspace`, `Esc` or typing dismisses it; `Tab` keeps it to edit. Anything that looks like a password, API key, token, database URL with credentials, one-time code or card number is never suggested, and copies older than 10 minutes are ignored. Turn it on or off from the footer.
 - **Light and dark**, following your system. Works on phones.
 - **Private.** No accounts, analytics, trackers or third-party requests. It's a static page; your list never leaves your browser.
 

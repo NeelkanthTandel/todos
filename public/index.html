@@ -26,11 +26,17 @@
   </header>
 
   <form class="composer" id="addForm" autocomplete="off">
-    <textarea id="new" rows="1" placeholder="What needs doing? Paste a list to add many at once" aria-label="New todo" aria-describedby="multi" enterkeyhint="done"></textarea>
+    <textarea id="new" rows="1" placeholder="What needs doing? Paste a list to add many at once" aria-label="New todo" aria-describedby="multi clipNote" enterkeyhint="done"></textarea>
     <div class="pick" id="pick" role="radiogroup" aria-label="Priority"></div>
     <button type="submit" class="add-btn" id="addBtn" disabled>Add</button>
   </form>
   <p class="multi" id="multi" hidden></p>
+  <p class="multi" id="clipNote" hidden>From your clipboard. <kbd>Enter</kbd> adds it, <kbd>Esc</kbd> dismisses it, <kbd>Tab</kbd> keeps it to edit.</p>
+  <div class="clip-offer" id="clipOffer" role="group" aria-label="Clipboard suggestions" hidden>
+    <span>Want Todos to suggest what you copy? It only looks when you come back to this tab, and skips anything that looks like a password or key.</span>
+    <button type="button" class="clip-yes" id="clipOn">Turn on</button>
+    <button type="button" class="ghost-btn" id="clipNo">No thanks</button>
+  </div>
 
   <main class="board" id="board"></main>
 
@@ -45,6 +51,7 @@
     <span class="k"><kbd>Ctrl</kbd><kbd>Z</kbd> undo anything</span>
     <span class="k"><kbd>↑</kbd><kbd>↓</kbd><kbd>←</kbd><kbd>→</kbd> navigate</span>
     <span class="status" id="status"></span>
+    <button type="button" class="ghost-btn clip-toggle" id="clipToggle" hidden></button>
   </footer>
 </div>
 
@@ -64,6 +71,7 @@
 
 <script src="config.js"></script>
 <script src="storage.js"></script>
+<script src="clipboard.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

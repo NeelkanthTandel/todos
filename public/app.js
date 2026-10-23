@@ -385,7 +385,7 @@
     const eff = effectivePick(n);
     for (const b of $("pick").children) b.setAttribute("aria-checked", String(b.dataset.prio === eff));
     $("addBtn").disabled = n === 0;
-    $("addBtn").textContent = n > 1 ? "Add " + n : "Add";
+    $("addBtn").textContent = (n > 1 ? "Add " + n : "Add") + (clip ? " from clipboard" : "");
     $("addForm").classList.toggle("tall", input.scrollHeight > 48);
     const m = $("multi");
     if (n > 1) {
@@ -402,9 +402,15 @@
     const b = e.target.closest("button[data-prio]"); if (!b) return;
     setPick(b.dataset.prio); input.focus();
   });
-  input.addEventListener("input", () => { typedAt = performance.now(); syncInput(); });
+  input.addEventListener("input", () => {
+    typedAt = performance.now();
+    if (clip && input.value !== clip.text) endClip(); // typed over it or deleted it
+    syncInput();
+  });
   input.addEventListener("focus", () => { typedAt = performance.now(); });
   input.addEventListener("keydown", e => {
+    if (clip && e.key === "Escape") { e.preventDefault(); e.stopPropagation(); dismissClip(); announce("Clipboard suggestion dismissed"); return; }
+    if (clip && e.key === "Tab" && !e.shiftKey) { e.preventDefault(); endClip(); input.setSelectionRange(input.value.length, input.value.length); return; }
     // Composer empty and the mouse moved onto a todo since you last typed: shortcuts go to that todo.
     if (!input.value && !e.metaKey && !e.ctrlKey && !e.altKey && ptrMovedAt > typedAt && /^([1-4sSxXeE]|Delete)$/.test(e.key)) {
       const li = hoveredRow();
@@ -419,9 +425,125 @@
     const n0 = parse(input.value).length;
     const prio = effectivePick(n0);
     const n = add(input.value, prio);
+    endClip();
     input.value = ""; multiPick = null; syncInput(); input.focus(); typedAt = performance.now();
     if (n > 1) toast("Added " + n + " todos to " + LANE[prio].short, "Undo", undo);
   });
+
+  // ---------- clipboard suggestions (opt-in, Chromium only) ----------
+  // Come back to the tab with something new copied and it waits in the composer, selected: Enter adds it,
+  // Backspace, Esc or typing dismiss it, Tab keeps it as a draft. Only Chromium can read the clipboard without
+  // a click every time, so other browsers never see this. Handled text is remembered as a hash, never as text.
+  const CLIP_KEY = NS + ".clip", CLIP_SEEN_KEY = NS + ".clipSeen", CLIP_FRESH_KEY = NS + ".clipFresh";
+  const CLIP_EXPIRE = 10 * 60e3; // a copy older than this is stale, like Gboard's clipboard suggestions
+  let clipSupported = false, clipBusy = false, clipTimer = null;
+  let clip = null; // { hash, text } while a suggestion is showing
+  const clipSeen = new Set();
+  try { for (const h of JSON.parse(lsGet(CLIP_SEEN_KEY) || "[]")) if (typeof h === "string") clipSeen.add(h); } catch {}
+  const clipOn = () => clipSupported && lsGet(CLIP_KEY) === "on";
+
+  async function sha256(text) {
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+    return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+  }
+  function rememberClip(hash) {
+    clipSeen.delete(hash); clipSeen.add(hash);
+    while (clipSeen.size > 50) clipSeen.delete(clipSeen.values().next().value);
+    lsSet(CLIP_SEEN_KEY, JSON.stringify([...clipSeen]));
+  }
+  // When this clipboard text was first seen, so a copy from an hour ago isn't offered after a reload.
+  function firstSeen(hash) {
+    let fresh = null;
+    try { fresh = JSON.parse(lsGet(CLIP_FRESH_KEY) || "null"); } catch {}
+    if (!fresh || fresh.hash !== hash || typeof fresh.at !== "number") {
+      fresh = { hash, at: Date.now() };
+      lsSet(CLIP_FRESH_KEY, JSON.stringify(fresh));
+    }
+    return fresh.at;
+  }
+  const composerIdle = () => !input.value && !editingId && !dragId &&
+    (document.activeElement === input || document.activeElement === document.body || !document.activeElement);
+
+  async function suggestFromClipboard() {
+    try { await lookAtClipboard(); }
+    finally { window.dispatchEvent(new Event("todos:clipcheck")); } // lets tests/smoke.html know a check finished
+  }
+  async function lookAtClipboard() {
+    if (!clipOn() || clipBusy || clip || document.visibilityState !== "visible" || !composerIdle()) return;
+    clipBusy = true;
+    try {
+      const text = (await navigator.clipboard.readText()).trim();
+      if (!text) return;
+      const hash = await sha256(text);
+      const age = Date.now() - firstSeen(hash);
+      if (clipSeen.has(hash) || age > CLIP_EXPIRE || !TodoClipboard.check(text).ok) return;
+      const lower = text.toLowerCase();
+      if (items.some(t => t.text.toLowerCase() === lower)) return;
+      if (!composerIdle()) return; // you started something while we were reading
+      showClip(hash, text, CLIP_EXPIRE - age);
+    } catch {
+      // Not focused, or permission withdrawn: try again next time, unless access is now blocked for good.
+      try { if ((await navigator.permissions.query({ name: "clipboard-read" })).state === "denied") setClip("off"); } catch {}
+    } finally { clipBusy = false; }
+  }
+  function showClip(hash, text, ttl) {
+    clip = { hash, text };
+    input.value = text;
+    $("addForm").classList.add("from-clip");
+    $("clipNote").hidden = false;
+    syncInput();
+    input.focus(); input.select();
+    announce("Suggested from your clipboard: " + text.slice(0, 80) + ". Enter adds it, Escape dismisses it.");
+    clearTimeout(clipTimer);
+    clipTimer = setTimeout(() => { if (clip && input.value === clip.text) dismissClip(); }, ttl);
+  }
+  // The suggestion is over (added, kept as a draft, dismissed or expired): never offer that text again.
+  function endClip() {
+    if (!clip) return;
+    rememberClip(clip.hash);
+    clip = null; clearTimeout(clipTimer);
+    $("addForm").classList.remove("from-clip");
+    $("clipNote").hidden = true;
+    syncInput();
+  }
+  function dismissClip() { endClip(); input.value = ""; syncInput(); }
+
+  function setClip(state) {
+    lsSet(CLIP_KEY, state);
+    if (state !== "on" && clip) dismissClip();
+    const t = $("clipToggle");
+    t.hidden = !clipSupported || !lsGet(CLIP_KEY);
+    t.textContent = "Clipboard suggestions: " + (state === "on" ? "on" : "off");
+    t.setAttribute("aria-pressed", String(state === "on"));
+  }
+  // Turning it on reads the clipboard once from your click, so the browser asks for permission in context.
+  async function enableClip() {
+    $("clipOffer").hidden = true;
+    try {
+      const text = (await navigator.clipboard.readText()).trim();
+      if (text) rememberClip(await sha256(text)); // you've just pasted or seen this one
+      setClip("on");
+      toast("Clipboard suggestions are on. Copy something, then come back here.");
+    } catch {
+      setClip("off");
+      toast("Clipboard access wasn't allowed, so suggestions stay off");
+    }
+    input.focus();
+  }
+  input.addEventListener("paste", () => { if (clipSupported && !lsGet(CLIP_KEY)) $("clipOffer").hidden = false; });
+  $("clipOn").addEventListener("click", enableClip);
+  $("clipNo").addEventListener("click", () => { $("clipOffer").hidden = true; setClip("off"); input.focus(); });
+  $("clipToggle").addEventListener("click", () => {
+    if (lsGet(CLIP_KEY) === "on") { setClip("off"); toast("Clipboard suggestions are off"); } else enableClip();
+  });
+  window.addEventListener("focus", suggestFromClipboard);
+  document.addEventListener("visibilitychange", suggestFromClipboard);
+  (async () => {
+    // Only Chromium knows the "clipboard-read" permission; Firefox and Safari throw here.
+    try { await navigator.permissions.query({ name: "clipboard-read" }); clipSupported = !!(navigator.clipboard?.readText && crypto.subtle); } catch {}
+    if (clipSupported && lsGet(CLIP_KEY)) setClip(lsGet(CLIP_KEY));
+    suggestFromClipboard();
+  })();
 
   // ---------- list interactions ----------
   function onClick(e) {

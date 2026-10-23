@@ -49,6 +49,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; } /* beats display rules like .clip-offer's flex */
 html, body { height: 100%; }
 body {
   background: var(--paper); color: var(--ink);
@@ -119,6 +120,20 @@ button { font: inherit; color: inherit; }
 .add-btn:disabled { opacity: .35; cursor: default; }
 .multi { margin: -6px 0 0; padding-left: 16px; font-size: 13px; color: var(--muted); }
 .multi b { color: var(--pen); font-weight: 600; }
+
+/* Clipboard suggestion: the copied text waits in the composer, selected, in the pen colour */
+.composer.from-clip { border-color: var(--pen); }
+.composer.from-clip #new { color: var(--pen); }
+.clip-offer {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: -4px 0 0;
+  padding: 10px 12px 10px 16px; border-radius: 10px; background: var(--pen-soft); font-size: 13.5px;
+}
+.clip-offer span { flex: 1 1 280px; }
+.clip-yes {
+  border: 0; border-radius: 7px; background: var(--pen); color: var(--sheet); cursor: pointer;
+  font-weight: 600; font-size: 13px; padding: 6px 12px;
+}
+.keys .clip-toggle { padding: 0 4px; font-size: 12.5px; }
 
 /* Heat colours per lane */
 [data-prio="h"] { --heat: var(--hot); }
