@@ -44,6 +44,7 @@
   const doc = () => frame.contentDocument;
   const $ = id => doc().getElementById(id);
   const rows = lane => [...doc().querySelectorAll("#list-" + lane + " li[data-id]")].map(li => li.querySelector(".text").textContent);
+  const shown = el => el.getClientRects().length > 0; // actually on screen, not just missing the hidden attribute
   const stored = () => JSON.parse(localStorage.getItem("todos.v1") || "[]");
   function type(text) {
     const ta = $("new");
@@ -133,6 +134,97 @@
     win().dispatchEvent(new (win().StorageEvent)("storage", { key: "todos.v1", newValue: JSON.stringify(other) }));
     await sleep(50);
     check("picks up another tab's list", rows("l").join() === "from another tab" && rows("n").length === 0, JSON.stringify(rows("l")));
+
+    // ---------- clipboard suggestions ----------
+    const filter = win().TodoClipboard.check;
+    // None of these are real. Each is assembled at runtime so secret scanners don't flag this file.
+    const secrets = {
+      "GitHub token": "ghp_" + "a1B2c3D4e5".repeat(3) + "f6G7h8",
+      "Anthropic key": "sk-ant-api03-" + "x".repeat(93) + "AA",
+      "Postgres URL": ["postgres://admin", "s3cret@db.example.com:5432/app"].join(":"),
+      "Mongo URL": ["mongodb+srv://user", "p4ss@cluster0.example.invalid/test"].join(":"),
+      "AWS key": "AKIA" + "IOSFODNN7EXAMPLE",
+      "JWT": ["eyJhbGciOiJIUzI1NiJ9", "eyJzdWIiOiIxMjM0NTY3ODkwIn0", "dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U"].join("."),
+      "private key": "-----BEGIN OPENSSH " + "PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA",
+      "password": "Tr0ub4dor&3",
+      "short password": "hunter2",
+      "one-time code": "482913",
+      "card number": "4242 4242 4242 4242",
+      "env line": "DATABASE_PASSWORD=hunter22",
+      "key inside text": "my key is 9fA8sd7f6g5h4j3k2l1qwe8r",
+      "token in URL": "https://example.com/reset?token=abc123def456",
+      "huge paste": "word ".repeat(600),
+    };
+    const leaked = Object.entries(secrets).filter(([, v]) => filter(v).ok).map(([k]) => k);
+    check("clipboard filter skips secrets", leaked.length === 0, leaked.join(", "));
+    const todos = ["Buy oat milk", "Call the dentist at 4pm", "groceries", "https://github.com/NeelkanthTandel/todos/pull/3",
+      "Fix auth: refactor login flow", "- buy milk\n- call mom", "Review PR #42 before Friday"];
+    const dropped = todos.filter(v => !filter(v).ok);
+    check("clipboard filter keeps ordinary todos", dropped.length === 0, JSON.stringify(dropped));
+
+    let chromium = true;
+    try { await navigator.permissions.query({ name: "clipboard-read" }); } catch { chromium = false; }
+    if (!chromium) {
+      check("clipboard suggestions (Chromium only, skipped)", true);
+    } else {
+      // Opt-in: the offer appears on your first paste, and "No thanks" keeps what you pasted.
+      for (const k of Object.keys(localStorage)) if (k.startsWith("todos.")) localStorage.removeItem(k);
+      await load(); await sleep(100);
+      check("no clipboard offer before you paste", !shown($("clipOffer")) && !shown($("clipNote")) && !shown($("clipToggle")));
+      $("new").value = "pasted by hand";
+      $("new").dispatchEvent(new (win().Event)("paste"));
+      check("offers clipboard suggestions on first paste", shown($("clipOffer")));
+      $("clipNo").click();
+      check("'No thanks' keeps the pasted text", !shown($("clipOffer")) && shown($("clipToggle")) && $("new").value === "pasted by hand" &&
+        localStorage.getItem("todos.clip") === "off" && $("clipToggle").textContent.endsWith("off"));
+
+      // Turned on. The permission prompt can't run headless, so the clipboard is stubbed first and the
+      // feature switched on afterwards (it's still "off" from above, so loading reads nothing).
+      await load(); await sleep(100);
+      let clipText = "";
+      win().navigator.clipboard.readText = async () => clipText;
+      localStorage.setItem("todos.clip", "on");
+      async function comeBack(text) {
+        clipText = text;
+        let done = false;
+        win().addEventListener("todos:clipcheck", () => { done = true; }, { once: true });
+        win().dispatchEvent(new (win().Event)("focus"));
+        await waitFor(() => done);
+      }
+      const box = $("new");
+      await comeBack("Buy oat milk");
+      check("suggests new clipboard text, selected", box.value === "Buy oat milk" && box.selectionStart === 0 &&
+        box.selectionEnd === box.value.length && shown($("clipNote")) && $("addBtn").textContent === "Add from clipboard",
+        JSON.stringify([box.value, box.selectionStart, box.selectionEnd, $("addBtn").textContent]));
+      $("addForm").requestSubmit();
+      check("Enter adds the suggestion", rows("n").includes("Buy oat milk") && box.value === "" && !shown($("clipNote")));
+      await comeBack("Buy oat milk");
+      check("doesn't suggest the same text twice", box.value === "");
+
+      await comeBack("Call the plumber");
+      box.dispatchEvent(new (win().KeyboardEvent)("keydown", { key: "Escape", bubbles: true }));
+      check("Esc dismisses the suggestion", box.value === "" && !shown($("clipNote")));
+      await comeBack("Call the plumber");
+      check("a dismissed suggestion stays dismissed", box.value === "");
+
+      await comeBack("Book flights");
+      box.value = "x"; box.dispatchEvent(new (win().Event)("input"));
+      check("typing replaces the suggestion", box.value === "x" && !shown($("clipNote")) && $("addBtn").textContent === "Add");
+      box.value = ""; box.dispatchEvent(new (win().Event)("input"));
+
+      await comeBack("Draft the roadmap");
+      box.dispatchEvent(new (win().KeyboardEvent)("keydown", { key: "Tab", bubbles: true }));
+      check("Tab keeps it as a draft to edit", box.value === "Draft the roadmap" && !shown($("clipNote")) &&
+        box.selectionStart === box.value.length && $("addBtn").textContent === "Add");
+      box.value = ""; box.dispatchEvent(new (win().Event)("input"));
+
+      await comeBack("ghp_" + "a1B2c3D4e5".repeat(3) + "f6G7h8");
+      check("never suggests a secret", box.value === "");
+
+      $("clipToggle").click();
+      await comeBack("Water the garden");
+      check("nothing is suggested once turned off", box.value === "" && localStorage.getItem("todos.clip") === "off");
+    }
   } catch (e) {
     check("no exceptions", false, e && e.stack || String(e));
   }

@@ -23,6 +23,7 @@ Your local copy has its own `localStorage` (it's a different origin from the liv
 | `public/index.html` | Markup, and the Content Security Policy |
 | `public/app.js` | The board: lanes, drag and drop, list parsing, undo/redo, shortcuts, export/import |
 | `public/storage.js` | Where todos are kept: localStorage always, plus an optional HTTP mirror. The API contract is at the top. |
+| `public/clipboard.js` | Decides whether copied text is safe to suggest (secret patterns). Add a case to `tests/smoke.html` when you change it. |
 | `public/config.js` | Per-deploy settings |
 | `public/styles.css` | Styles, light and dark |
 | `tests/smoke.html` | End-to-end checks that drive the app in an iframe |
