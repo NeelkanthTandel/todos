@@ -1,4 +1,4 @@
-# Keeps the pinned GitHub Actions up to date with weekly pull requests.
+# Keeps the pinned GitHub Actions and the relay's npm packages up to date with weekly pull requests.
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -7,4 +7,11 @@ updates:
       interval: weekly
     groups:
       actions:
+        patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /relay
+    schedule:
+      interval: weekly
+    groups:
+      relay:
         patterns: ["*"]
