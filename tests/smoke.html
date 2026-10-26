@@ -40,6 +40,7 @@
       frame.src = "../public/index.html?" + Date.now();
     });
   }
+  const blank = () => new Promise(resolve => { frame.onload = () => resolve(); frame.src = "about:blank"; });
   const win = () => frame.contentWindow;
   const doc = () => frame.contentDocument;
   const $ = id => doc().getElementById(id);
@@ -64,7 +65,7 @@
 
   try {
     // Make sure the iframe gets the files on disk, not ones the browser cached from an earlier run.
-    for (const f of ["index.html", "config.js", "storage.js", "clipboard.js", "relay.js", "app.js", "styles.css"]) await fetch("../public/" + f, { cache: "reload" });
+    for (const f of ["index.html", "config.js", "storage.js", "clipboard.js", "relay.js", "qr.js", "app.js", "styles.css"]) await fetch("../public/" + f, { cache: "reload" });
     for (const k of Object.keys(localStorage)) if (k.startsWith("todos.")) localStorage.removeItem(k);
 
     // A corrupted saved value must not take the page down.
@@ -421,6 +422,7 @@
       !("session" in s2) && s3.session.state === "ended" && s3.session.project === "", JSON.stringify([s1, s2, s3]));
 
     // ---------- live sharing: your side ----------
+    await blank();
     for (const k of Object.keys(localStorage)) if (k.startsWith("todos.")) localStorage.removeItem(k);
     localStorage.setItem("todos.v1", JSON.stringify([
       { id: "o1", text: "Ship it", done: false, prio: "h", created: 1 },
@@ -543,6 +545,7 @@
     stoppedIds = new Set();
 
     // ---------- live sharing: viewing someone else's board ----------
+    await blank(); // so the old page can't re-save what's set up below
     for (const k of Object.keys(localStorage)) if (k.startsWith("todos.")) localStorage.removeItem(k);
     const OWN = [
       { id: "m1", text: "My own todo", done: false, prio: "h", created: 1 },
@@ -550,8 +553,10 @@
     ];
     localStorage.setItem("todos.v1", JSON.stringify(OWN));
     const ownBefore = localStorage.getItem("todos.v1");
+    // Once you've saved (copied something and undone it), the list also carries positions and change times.
+    const ownSame = () => JSON.stringify(stored().map(t => [t.id, t.text, t.done, t.prio])) === JSON.stringify(OWN.map(t => [t.id, t.text, t.done, t.prio]));
     const VIEW_ID = "VVVVVVVVVVVVVVVVVVVVVV";
-    const VKEY = win().TodoRelay.newKey();
+    const VKEY = btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(32)))).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
     socks.length = 0; shareCalls.length = 0;
     await new Promise(resolve => { frame.onload = resolve; frame.src = "../public/index.html?" + Date.now() + "#share=" + VIEW_ID + "." + VKEY; });
     await sleep(100);
@@ -661,12 +666,12 @@
     check("Add to mine copies into your Fridge with a new id", own.length === 3 && own[2].text === "Review" && own[2].prio === "n" && !own[2].done &&
       !["m1", "m2"].includes(own[2].id) && $("toastMsg").textContent === "Added to your Fridge" && sharedRows() === shownBefore);
     $("undo").click();
-    check("…and Undo takes it back out", localStorage.getItem("todos.v1") === ownBefore);
+    check("…and Undo takes it back out", ownSame());
     $("viewCopy").click();
     own = stored();
     check("Copy to mine copies every open todo", own.map(t => t.text).slice(2).join("|") === "Ship it|Fix the bug|Review|Old idea" && own.slice(2).every(t => t.prio === "n" && !t.done && !t.wip), JSON.stringify(own));
     key(doc().body, "z", { ctrlKey: true });
-    check("Ctrl+Z undoes the copy", localStorage.getItem("todos.v1") === ownBefore);
+    check("Ctrl+Z undoes the copy", ownSame());
     const hoverCopy = firstRow.isConnected ? firstRow : doc().querySelector("#list-h li[data-id]");
     hoverCopy.querySelector("[data-act='copy']").focus();
     key(hoverCopy.querySelector("[data-act='copy']"), "c");
@@ -686,7 +691,7 @@
     await deliverState(await win().TodoRelay.encrypt(VKEY, ["not", "a", "board"]), 5);
     await deliverState(await win().TodoRelay.encrypt(win().TodoRelay.newKey(), board1), 6);
     await deliverState("not base64!", 7);
-    check("a malformed or foreign state is ignored", sharedRows() === before2 && localStorage.getItem("todos.v1") === ownBefore);
+    check("a malformed or foreign state is ignored", sharedRows() === before2 && ownSame());
 
     // Switching: the backtick, and the switcher in the heading.
     key(doc().body, "`");
@@ -739,6 +744,283 @@
     check("a channel that's gone (404) shows 'stopped sharing'", $("viewText").textContent.startsWith("The owner stopped sharing"), $("viewText").textContent);
     $("viewRemove").click();
     check("Remove goes back to your own board", !shown($("viewBar")) && JSON.parse(localStorage.getItem("todos.shared")).length === 0 && localStorage.getItem("todos.v1").includes("Mine again"));
+
+    // ---------- device sync: merging (TodoStorage.merge) ----------
+    const M = win().TodoStorage.merge, DAY = 864e5, NOW = Date.now();
+    const T = NOW - 3600e3; // change times below are offsets from an hour ago
+    const rec = (id, text, updated, pos = 1, extra = {}) => Object.assign({ id, text, done: false, prio: "h", created: 1, pos, updated: T + updated }, extra);
+    const tomb = (id, updated) => ({ id, deleted: true, updated: T + updated });
+    const texts = list => list.filter(r => !r.deleted).map(r => r.text).join("|");
+    const base = [rec("a", "A", 100, 1), rec("b", "B", 100, 2), rec("c", "C", 100, 3), rec("d", "D", 100, 4)];
+    const dev1 = base.map(r => r.id === "a" ? rec("a", "A edited on 1", 200, 1) : r);
+    const dev2 = base.map(r => r.id === "c" ? rec("c", "C edited on 2", 210, 3) : r);
+    check("merge: edits to different todos on two devices both survive", texts(M(dev1, dev2, NOW)) === "A edited on 1|B|C edited on 2|D", texts(M(dev1, dev2, NOW)));
+    const one = base.map(r => r.id === "b" ? rec("b", "B from 1", 300, 2) : r), two = base.map(r => r.id === "b" ? rec("b", "B from 2", 301, 2) : r);
+    check("merge: the same todo edited on both, the newer edit wins", texts(M(one, two, NOW)) === "A|B from 2|C|D" && texts(M(two, one, NOW)) === "A|B from 2|C|D");
+    const deleted = base.filter(r => r.id !== "d").concat(tomb("d", 400)), oldEdit = base.map(r => r.id === "d" ? rec("d", "D edited earlier", 350, 4) : r);
+    check("merge: deleted on one device, edited earlier on the other → stays deleted", texts(M(deleted, oldEdit, NOW)) === "A|B|C" && texts(M(oldEdit, deleted, NOW)) === "A|B|C" &&
+      M(deleted, oldEdit, NOW).some(r => r.id === "d" && r.deleted));
+    const laterEdit = base.map(r => r.id === "d" ? rec("d", "D edited later", 450, 4) : r);
+    check("merge: an edit made after the delete brings it back (last writer wins)", texts(M(deleted, laterEdit, NOW)).endsWith("D edited later"));
+    const tie = base.map(r => r.id === "d" ? rec("d", "D same moment", 400, 4) : r);
+    check("merge: deleted and edited in the same millisecond → deleted", texts(M(deleted, tie, NOW)) === "A|B|C" && texts(M(tie, deleted, NOW)) === "A|B|C");
+    const x1 = [rec("x", "one way", 500)], x2 = [rec("x", "other way", 500)];
+    check("merge: two edits at the same moment resolve the same way on both devices", JSON.stringify(M(x1, x2, NOW)) === JSON.stringify(M(x2, x1, NOW)));
+    // Device 1 drags D to the top; device 2 moves A to the end, at the same time.
+    const moved1 = base.map(r => r.id === "d" ? rec("d", "D", 500, 0.5) : r), moved2 = base.map(r => r.id === "a" ? rec("a", "A", 510, 5) : r);
+    check("merge: concurrent reorders keep both moves", texts(M(moved1, moved2, NOW)) === "D|B|C|A" && texts(M(moved2, moved1, NOW)) === "D|B|C|A", texts(M(moved1, moved2, NOW)));
+    const moveA1 = base.map(r => r.id === "a" ? rec("a", "A", 600, 2.5) : r), moveA2 = base.map(r => r.id === "a" ? rec("a", "A", 610, 3.5) : r);
+    check("merge: the same todo moved on both → the later move wins", texts(M(moveA1, moveA2, NOW)) === "B|C|A|D");
+    const aged = M([{ id: "old", deleted: true, updated: NOW - 31 * DAY }, { id: "new", deleted: true, updated: NOW - 29 * DAY }], [], NOW);
+    check("merge: tombstones expire after 30 days", aged.length === 1 && aged[0].id === "new");
+    const m1 = M(dev1, dev2, NOW);
+    check("merge: merging again changes nothing", JSON.stringify(M(m1, m1, NOW)) === JSON.stringify(m1) && JSON.stringify(M(m1, dev1, NOW)) === JSON.stringify(m1));
+
+    // ---------- device sync: the data model in the app ----------
+    await blank();
+    for (const k of Object.keys(localStorage)) if (k.startsWith("todos.")) localStorage.removeItem(k);
+    localStorage.setItem("todos.v1", JSON.stringify([ // saved before positions and change times existed
+      { id: "p1", text: "First", done: false, prio: "h", created: 10 },
+      { id: "p2", text: "Second", done: false, prio: "h", created: 20 },
+      { id: "p3", text: "Third", done: false, prio: "h", created: 30 },
+      { id: "p4", text: "Old done", done: true, prio: "m", created: 40, doneAt: 50 },
+    ]));
+    await load(); await sleep(100);
+    check("an older saved list loads in its saved order", rows("h").join("|") === "First|Second|Third");
+    type("Fourth");
+    const firstSave = stored();
+    check("saving adds a position and a change time to every todo", firstSave.every(t => typeof t.pos === "number" && typeof t.updated === "number") &&
+      firstSave.find(t => t.id === "p1").updated === 10 && firstSave.find(t => t.id === "p4").updated === 50, JSON.stringify(firstSave));
+    // Drag Third above First: only Third changes.
+    const dragRow = id => doc().querySelector('#list-h li[data-id="' + id + '"]');
+    const dt = new (win().DataTransfer)();
+    dragRow("p3").dispatchEvent(new (win().DragEvent)("dragstart", { bubbles: true, cancelable: true, dataTransfer: dt }));
+    const tgt = dragRow("p1").getBoundingClientRect();
+    dragRow("p1").dispatchEvent(new (win().DragEvent)("dragover", { bubbles: true, cancelable: true, dataTransfer: dt, clientX: tgt.left + 10, clientY: tgt.top + 2 }));
+    dragRow("p1").dispatchEvent(new (win().DragEvent)("drop", { bubbles: true, cancelable: true, dataTransfer: dt }));
+    doc().dispatchEvent(new (win().DragEvent)("dragend", { bubbles: true }));
+    const afterDrag = stored();
+    const changed = afterDrag.filter(t => t.updated !== firstSave.find(x => x.id === t.id).updated).map(t => t.id);
+    check("a reorder moves only the dragged todo, between its new neighbours", rows("h").join("|") === "Third|First|Second" && changed.join() === "p3" &&
+      afterDrag.find(t => t.id === "p3").pos < afterDrag.find(t => t.id === "p1").pos, rows("h").join("|") + " changed " + changed.join());
+    const li2 = dragRow("p2"); li2.querySelector("[data-act='delete']").click();
+    const tombs1 = JSON.parse(localStorage.getItem("todos.tombs") || "[]");
+    check("deleting leaves a tombstone", tombs1.length === 1 && tombs1[0].id === "p2" && tombs1[0].deleted === true && tombs1[0].updated >= afterDrag.find(t => t.id === "p2").updated);
+    $("undo").click();
+    const back = stored().find(t => t.id === "p2");
+    check("undoing the delete brings it back, newer than its tombstone", back && back.updated > tombs1[0].updated && JSON.parse(localStorage.getItem("todos.tombs")).length === 0);
+    const exportedNow = JSON.parse((await exportVia("json")).text);
+    check("a JSON backup holds todos only, no tombstones", exportedNow.items.length === 5 && exportedNow.items.every(t => t.text));
+
+    // ---------- device sync: pairing and syncing through a fake relay ----------
+    const SYNC_ID = "YYYYYYYYYYYYYYYYYYYYYY";
+    const relaySide = { version: 0, data: null, writers: [], revoked: new Set(), offline: false, puts: 0, conflicts: 0, beforePut: null };
+    const syncSocks = [];
+    class SyncSocket {
+      constructor(url, protocols) {
+        this.url = url; this.protocols = protocols; syncSocks.push(this);
+        setTimeout(() => {
+          if (relaySide.offline) { this.onclose && this.onclose({ code: 1006 }); return; }
+          this.onopen && this.onopen();
+          if (url.endsWith("/c/" + SYNC_ID)) this.onmessage && this.onmessage({ data: JSON.stringify({ type: "state", version: relaySide.version, data: relaySide.data }) });
+        }, 0);
+      }
+      send() {}
+      close() { this.closed = true; }
+    }
+    const syncCalls = [];
+    const tokenOk = auth => auth === "Bearer sync-owner" || relaySide.writers.some(w => auth === "Bearer " + w.token && !relaySide.revoked.has(w.wid));
+    function broadcast() {
+      for (const s of syncSocks) if (!s.closed && s.url.endsWith("/c/" + SYNC_ID)) s.onmessage && s.onmessage({ data: JSON.stringify({ type: "state", version: relaySide.version, data: relaySide.data }) });
+    }
+    async function syncFetch(url, init) {
+      const path = url.replace("https://relay.test", "");
+      syncCalls.push(init.method + " " + path + (init.headers["If-Match"] !== undefined ? " If-Match:" + init.headers["If-Match"] : ""));
+      if (relaySide.offline) throw new TypeError("Failed to fetch");
+      if (init.method === "POST" && path === "/c") return new Response(JSON.stringify({ id: SYNC_ID, kind: "sync", ownerToken: "sync-owner" }), { status: 201 });
+      if (!path.startsWith("/c/" + SYNC_ID)) return new Response('{"error":"no such channel"}', { status: 404 });
+      const auth = init.headers.Authorization;
+      if (!tokenOk(auth)) return new Response('{"error":"missing or wrong token"}', { status: 401 });
+      const w = relaySide.writers.find(x => auth === "Bearer " + x.token);
+      if (w) w.used = Date.now();
+      if (path === "/c/" + SYNC_ID && init.method === "GET") return new Response(JSON.stringify({ kind: "sync", version: relaySide.version, data: relaySide.data }));
+      if (path.endsWith("/state") && init.method === "PUT") {
+        if (relaySide.beforePut) { const f = relaySide.beforePut; relaySide.beforePut = null; await f(); }
+        if (init.headers["If-Match"] !== undefined && init.headers["If-Match"] !== String(relaySide.version)) {
+          relaySide.conflicts++;
+          return new Response(JSON.stringify({ error: "version conflict", version: relaySide.version }), { status: 409 });
+        }
+        relaySide.version++; relaySide.puts++; relaySide.data = JSON.parse(init.body).data;
+        setTimeout(broadcast, 0);
+        return new Response(JSON.stringify({ version: relaySide.version }));
+      }
+      if (path.endsWith("/writers") && init.method === "POST") {
+        const nw = { wid: "w" + (relaySide.writers.length + 1), token: win().TodoRelay.newKey(), created: Date.now(), used: null };
+        relaySide.writers.push(nw);
+        return new Response(JSON.stringify(nw), { status: 201 });
+      }
+      if (path.endsWith("/writers") && init.method === "GET") return new Response(JSON.stringify({ writers: relaySide.writers.filter(x => !relaySide.revoked.has(x.wid)).map(({ wid, created, used }) => ({ wid, created, used })) }));
+      if (/\/writers\/[\w-]+$/.test(path) && init.method === "DELETE") {
+        const wid = path.split("/").pop();
+        relaySide.revoked.add(wid);
+        return new Response(null, { status: 204 });
+      }
+      return new Response('{"error":"nope"}', { status: 400 });
+    }
+    let syncKey = null;
+    const relayList = async () => relaySide.data ? (await win().TodoRelay.decrypt(syncKey, relaySide.data, 8e6)).items : [];
+    const liveTexts = async () => (await relayList()).filter(r => !r.deleted).map(r => r.text).sort().join("|");
+    // The other device: edits the synced list directly and tells this one, like the relay would.
+    async function otherDevice(edit, { quiet = false } = {}) {
+      const list = await relayList();
+      edit(list);
+      relaySide.data = await win().TodoRelay.encrypt(syncKey, { v: 1, items: list });
+      relaySide.version++;
+      if (!quiet) {
+        const handled = new Promise(r => win().addEventListener("todos:syncmsg", r, { once: true }));
+        broadcast();
+        await handled;
+      }
+    }
+    const flushed = () => new Promise(r => win().addEventListener("todos:flushed", r, { once: true }));
+    const syncSeam = () => win().dispatchEvent(new (win().CustomEvent)("todos:relay-seam", { detail: { base: "https://relay.test", fetch: syncFetch, WebSocket: SyncSocket } }));
+
+    check("Sync across devices is hidden without a relay", !shown($("syncBtn")));
+    syncSeam();
+    check("…and shown with one", shown($("syncBtn")) && $("syncBtn").textContent === "Sync across devices");
+    $("syncBtn").click();
+    check("the sync dialog offers to start, or to link with a code", $("syncDialog").open && shown($("syncStart")) && shown($("syncCode")) && !shown($("syncOn")));
+    let up = flushed();
+    $("syncStart").click();
+    await up;
+    const saved1 = JSON.parse(localStorage.getItem("todos.sync") || "null");
+    syncKey = saved1 && saved1.key;
+    check("Start syncing creates a sync channel and keeps { id, key, ownerToken }", saved1 && saved1.id === SYNC_ID && saved1.ownerToken === "sync-owner" && /^[\w-]{43}$/.test(saved1.key) &&
+      syncCalls.includes("POST /c") && !syncCalls.join(" ").includes(saved1.key), JSON.stringify(syncCalls));
+    check("…and uploads this list (with If-Match)", await liveTexts() === "First|Fourth|Old done|Second|Third" && syncCalls.some(c => c.startsWith("PUT /c/" + SYNC_ID + "/state If-Match:0")), await liveTexts());
+    check("the uploaded list carries tombstones too", (await relayList()).every(r => r.deleted || (typeof r.pos === "number" && typeof r.updated === "number")));
+    check("the dialog now shows sync is on, with devices to add", shown($("syncOn")) && shown($("syncShowCode")) && shown($("syncOffBtn")) && $("syncBtn").textContent === "Sync: on");
+    $("syncShowCode").click();
+    await waitFor(() => !$("syncPair").hidden);
+    const pairCode = $("syncPairCode").textContent;
+    const decodedCode = JSON.parse(new TextDecoder().decode(win().TodoRelay.fromB64u(pairCode)));
+    check("Show a pairing code mints a writer token and shows base64url of { relay, channelId, key, writerToken }", Object.keys(decodedCode).join() === "relay,channelId,key,writerToken" &&
+      decodedCode.relay === "https://relay.test" && decodedCode.channelId === SYNC_ID && decodedCode.key === syncKey && decodedCode.writerToken === relaySide.writers[0].token, pairCode);
+    const qrSvg = $("syncQr").querySelector("svg");
+    check("…with a QR code drawn in the page", qrSvg && qrSvg.getAttribute("aria-label") && qrSvg.querySelector("path").getAttribute("d").length > 1000);
+    // A known vector, checked against an independent encoder (same version and mask) and decoded with a QR reader.
+    const vq = win().TodoQR.matrix("https://todos.always17.com/#sync=TEST-vector_0123456789");
+    let bits = "";
+    for (let y = 0; y < vq.size; y++) for (let x = 0; x < vq.size; x++) bits += vq.dark(x, y) ? "1" : "0";
+    const vhash = [...new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(bits)))].map(b => b.toString(16).padStart(2, "0")).join("");
+    check("the QR encoder matches a known-good code", vq.size === 33 && vq.version === 4 && vq.mask === 4 && vhash === "25984cb48235287f28bf5765f27fdce355202660a948a4f6fa8cfe975cde55fe", vhash);
+    $("syncShowCode").click();
+    await sleep(50);
+    check("the same code is shown again until a device uses it", $("syncPairCode").textContent === pairCode && relaySide.writers.length === 1);
+    $("syncClose").click();
+
+    // Live: the other device's edits arrive and merge with ours.
+    await otherDevice(list => { list.find(r => r.text === "First").text = "First, edited on the phone"; list.find(r => r.text === "First, edited on the phone").updated = Date.now(); });
+    check("an edit from another device shows up", rows("h").includes("First, edited on the phone"));
+    up = flushed();
+    type("Added on the laptop");
+    await up;
+    check("…and this device's edits go up merged with it", await liveTexts() === "Added on the laptop|First, edited on the phone|Fourth|Old done|Second|Third", await liveTexts());
+    await otherDevice(list => { const i = list.findIndex(r => r.text === "Fourth"); list[i] = { id: list[i].id, deleted: true, updated: Date.now() }; });
+    check("a delete on another device removes it here, and keeps a tombstone", !rows("n").includes("Fourth") && JSON.parse(localStorage.getItem("todos.tombs")).some(t => t.deleted));
+
+    // 409: another device saves between our read and our write. Ours retries, merging theirs in.
+    relaySide.beforePut = () => otherDevice(list => { list.push({ id: "phone1", text: "From the phone, mid-save", done: false, prio: "l", created: 1, pos: 1, updated: Date.now() }); }, { quiet: true });
+    const conflictsBefore = relaySide.conflicts;
+    up = flushed();
+    type("Racing the phone");
+    await up;
+    check("a 409 conflict re-reads, merges and retries", relaySide.conflicts === conflictsBefore + 1 && (await liveTexts()).includes("From the phone, mid-save") &&
+      (await liveTexts()).includes("Racing the phone") && rows("l").includes("From the phone, mid-save"), await liveTexts());
+
+    // Offline: edits wait, then go up when the relay is reachable again.
+    relaySide.offline = true;
+    type("Written offline");
+    await waitFor(() => $("status").textContent.startsWith("Offline"));
+    check("offline edits stay here, marked to retry", $("status").textContent === "Offline. Retrying…" && stored().some(t => t.text === "Written offline") && !(await liveTexts()).includes("Written offline"));
+    up = flushed();
+    relaySide.offline = false;
+    await up;
+    check("…and are uploaded when back online", (await liveTexts()).includes("Written offline") && $("status").textContent === "Synced", $("status").textContent);
+
+    // Linked devices and unlinking (on the device that started sync).
+    relaySide.writers[0].used = Date.now();
+    $("syncBtn").click();
+    await waitFor(() => $("syncDevices").querySelector("button[data-wid]"));
+    check("linked devices are listed with Unlink", $("syncDevices").textContent.includes("Device linked") && !!$("syncDevices").querySelector('button[data-wid="w1"]'));
+    $("syncDevices").querySelector('button[data-wid="w1"]').click();
+    await waitFor(() => $("toastMsg").textContent.startsWith("Unlinked"));
+    check("Unlink revokes that device's token", syncCalls.includes("DELETE /c/" + SYNC_ID + "/writers/w1") && relaySide.revoked.has("w1"));
+    $("syncClose").click();
+
+    // A second device links with a code: it has its own todos, so it asks to merge (the default) or replace.
+    const putsBeforeLink = relaySide.puts;
+    const wt = await (await syncFetch("https://relay.test/c/" + SYNC_ID + "/writers", { method: "POST", headers: { Authorization: "Bearer sync-owner" } })).json();
+    const code2 = win().TodoRelay.toB64u(new TextEncoder().encode(JSON.stringify({ relay: "https://relay.test", channelId: SYNC_ID, key: syncKey, writerToken: wt.token })));
+    await blank();
+    for (const k of Object.keys(localStorage)) if (k.startsWith("todos.")) localStorage.removeItem(k);
+    localStorage.setItem("todos.v1", JSON.stringify([{ id: "tab1", text: "Only on the tablet", done: false, prio: "m", created: 5 }]));
+    syncSocks.length = 0;
+    await load(); await sleep(100);
+    syncSeam();
+    $("syncBtn").click();
+    $("syncCode").value = "not a code"; $("syncLink").click();
+    await waitFor(() => !$("syncErr").hidden);
+    check("a bad pairing code is refused", $("syncErr").textContent.includes("isn't a pairing code") && !localStorage.getItem("todos.sync"));
+    $("syncCode").value = code2; $("syncCode").dispatchEvent(new (win().Event)("input"));
+    $("syncLink").click();
+    await waitFor(() => !$("syncChoice").hidden);
+    check("with todos on both, it asks: Merge both lists (default) or Replace", shown($("syncChoice")) && $("syncMerge").checked && !$("syncReplace").checked && !localStorage.getItem("todos.sync"));
+    up = flushed();
+    $("syncLink").click();
+    await up;
+    const linkedCfg = JSON.parse(localStorage.getItem("todos.sync") || "null");
+    check("Merge both lists keeps both, here and on the relay", rows("m").includes("Only on the tablet") && rows("n").includes("Added on the laptop") &&
+      (await liveTexts()).includes("Only on the tablet") && relaySide.puts > putsBeforeLink && linkedCfg && linkedCfg.token === wt.token && !linkedCfg.ownerToken, JSON.stringify(rows("m")));
+    const wsLinked = syncSocks.find(s => s.url === "wss://relay.test/c/" + SYNC_ID && !s.closed);
+    check("a linked device follows with its own writer token", wsLinked && wsLinked.protocols.includes("bearer." + wt.token));
+    check("a linked device can't add or unlink devices", shown($("syncNotOwner")) && !shown($("syncShowCode")));
+    $("syncClose").click();
+
+    // Unlinked from the first device: the socket closes with 4001 and this device stops syncing.
+    relaySide.revoked.add(wt.wid);
+    wsLinked.onclose({ code: 4001 });
+    await waitFor(() => !localStorage.getItem("todos.sync"));
+    check("an unlinked device stops syncing and keeps its list", !localStorage.getItem("todos.sync") && $("syncBtn").textContent === "Sync across devices" &&
+      $("toastMsg").textContent.includes("unlinked") && rows("m").includes("Only on the tablet"));
+    const putsAfterUnlink = relaySide.puts;
+    type("After unlinking");
+    await sleep(200);
+    check("…and its edits no longer reach the relay", relaySide.puts === putsAfterUnlink && !(await liveTexts()).includes("After unlinking"));
+
+    // A third device picks Replace: its own list is swapped for the synced one.
+    const wt3 = await (await syncFetch("https://relay.test/c/" + SYNC_ID + "/writers", { method: "POST", headers: { Authorization: "Bearer sync-owner" } })).json();
+    const code3 = win().TodoRelay.toB64u(new TextEncoder().encode(JSON.stringify({ relay: "https://relay.test", channelId: SYNC_ID, key: syncKey, writerToken: wt3.token })));
+    await blank();
+    for (const k of Object.keys(localStorage)) if (k.startsWith("todos.")) localStorage.removeItem(k);
+    localStorage.setItem("todos.v1", JSON.stringify([{ id: "old9", text: "Stale list on the old phone", done: false, prio: "h", created: 5 }]));
+    await new Promise(resolve => { frame.onload = resolve; frame.src = "../public/index.html?" + Date.now(); });
+    await sleep(50);
+    syncSeam();
+    win().location.hash = "#sync=" + code3; // what scanning the QR code opens
+    await waitFor(() => $("syncDialog").open);
+    check("opening a #sync= link (the QR code) opens the dialog with the code filled in", $("syncCode").value === code3 && win().location.hash === "");
+    $("syncLink").click();
+    await waitFor(() => !$("syncChoice").hidden);
+    $("syncReplace").checked = true;
+    $("syncLink").click();
+    await waitFor(() => !!localStorage.getItem("todos.sync"));
+    await sleep(100);
+    check("Replace this device's list takes the synced list instead", !rows("h").includes("Stale list on the old phone") && rows("n").includes("Added on the laptop") &&
+      !(await liveTexts()).includes("Stale list on the old phone"), JSON.stringify(rows("h")));
+    $("syncOffBtn").click(); $("syncOffBtn").click();
+    check("Turn off sync stops syncing on this device", !localStorage.getItem("todos.sync") && $("toastMsg").textContent.startsWith("Sync is off"));
+    $("syncClose").click();
   } catch (e) {
     check("no exceptions", false, e && e.stack || String(e));
   }

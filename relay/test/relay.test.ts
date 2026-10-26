@@ -135,6 +135,27 @@ describe("auth", () => {
     expect(list.writers).toHaveLength(0);
   });
 
+  it("a sync device counts as used once it reads", async () => {
+    const ch = await create("sync");
+    const w = await mint(ch.id, ch.ownerToken);
+    const before = await (await call("/c/" + ch.id + "/writers", { token: ch.ownerToken })).json<any>();
+    expect(before.writers[0].used).toBeNull();
+    expect((await call("/c/" + ch.id, { token: w.token })).status).toBe(200);
+    const after = await (await call("/c/" + ch.id + "/writers", { token: ch.ownerToken })).json<any>();
+    expect(after.writers[0].used).toBeTypeOf("number");
+  });
+
+  it("sync: a stale If-Match after another device's write gets 409 with the current version and keeps the state", async () => {
+    const ch = await create("sync");
+    const a = await mint(ch.id, ch.ownerToken), b = await mint(ch.id, ch.ownerToken);
+    expect((await put("/c/" + ch.id + "/state", { data: "AAA" }, { token: a.token, headers: { "If-Match": "0" } })).status).toBe(200);
+    const late = await put("/c/" + ch.id + "/state", { data: "BBB" }, { token: b.token, headers: { "If-Match": "0" } });
+    expect(late.status).toBe(409);
+    expect(await late.json()).toMatchObject({ version: 1 });
+    expect(await (await call("/c/" + ch.id, { token: b.token })).json()).toEqual({ kind: "sync", version: 1, data: "AAA" });
+    expect((await put("/c/" + ch.id + "/state", { data: "BBB" }, { token: b.token, headers: { "If-Match": '"1"' } })).status).toBe(200);
+  });
+
   it("revoking a sync writer closes its sockets", async () => {
     const ch = await create("sync");
     const w = await mint(ch.id, ch.ownerToken);

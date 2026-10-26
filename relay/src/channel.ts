@@ -16,6 +16,7 @@ export const LIMITS = {
   ttl: 90 * 864e5,         // a channel unused this long deletes itself
 };
 const TOUCH_EVERY = 3600e3; // write the "last used" time at most this often
+const SEEN_EVERY = 60e3;    // and a sync device's "last seen" time at most this often
 
 export const json = (body: unknown, status = 200, headers: Record<string, string> = {}) =>
   new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json", ...headers } });
@@ -174,6 +175,11 @@ export class Channel extends DurableObject<Env> {
     const canWrite = !!role; // owner or a paired writer
     const canRead = kind === "share" || (kind === "inbox" ? isOwner : canWrite);
     if (role) await this.touch();
+    // A paired sync device reads more than it writes, so any request counts as "last seen" (shown when unlinking).
+    if (kind === "sync" && role && !role.owner) {
+      const now = Date.now();
+      this.sql.exec("UPDATE writers SET used = ? WHERE wid = ? AND (used IS NULL OR used < ?)", now, role.wid, now - SEEN_EVERY);
+    }
 
     // GET /c/:id (optionally a WebSocket)
     if (rest.length === 0 && m === "GET") {
