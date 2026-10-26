@@ -21,7 +21,7 @@
 - **Done** slides out from the side, grouped by day. Ticked todos linger for a moment so you see them go.
 - **Undo anything** with `Ctrl/⌘+Z`, redo with `Ctrl/⌘+Shift+Z`: adds, deletes, moves, edits, imports, clearing Done.
 - **Keyboard first.** Shortcuts work on the focused todo, or on the one under your mouse.
-- **Export and import** a JSON backup to move between browsers or devices.
+- **Export as plain text** to paste anywhere (copy or `.txt`), or **export and import** a JSON backup to move between browsers or devices.
 - **Clipboard suggestions** (Chrome, Edge, Brave; off until you turn them on). Copy something, come back to Todos, and it's waiting in the box, selected: `Enter` adds it; `Backspace`, `Esc` or typing dismisses it; `Tab` keeps it to edit. Anything that looks like a password, API key, token, database URL with credentials, one-time code or card number is never suggested, and copies older than 10 minutes are ignored. Turn it on or off from the footer.
 - **Light and dark**, following your system. Works on phones.
 - **Private.** No accounts, analytics, trackers or third-party requests. It's a static page; your list never leaves your browser.
@@ -50,9 +50,27 @@ By default everything lives in your browser's `localStorage`:
 - **Clearing site data deletes it**, and Safari deletes it if you haven't opened the site for 7 days (unless you've added it to your Home Screen). Export a backup now and then.
 - **Tabs stay in step.** A change in one tab shows up in your other tabs straight away.
 
-### Backups: Export / Import
+### Export / Import
 
-**Export** (top right) downloads `todos-YYYY-MM-DD.json`:
+**Export** (top right) opens a menu:
+
+- **Copy as text** / **Download as text (.txt)**: a plain list, one numbered group per lane (`p1` Boiling over, `p2` Simmering, `p3` Back burner, `p4` Fridge). Done todos come last in their group, struck through. Empty lanes are skipped.
+
+  ```text
+  p1
+
+  1. Fix the checkout bug
+  2. Reply to Priya
+  3. P̶a̶y̶ ̶r̶e̶n̶t̶
+
+
+  p2
+
+  1. Draft the Q4 roadmap
+  2. Book train tickets
+  ```
+
+- **Download backup (.json)**: everything, for Import. Saved as `todos-YYYY-MM-DD.json`:
 
 ```json
 { "app": "todos", "version": 1, "exported": "2026-10-22T09:30:00.000Z", "items": [ ... ] }

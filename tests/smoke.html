@@ -97,14 +97,32 @@
     await sleep(50);
     check("ticking marks it done", $("doneN").textContent === "2" && stored().filter(t => t.done).length === 2);
 
-    // Export: capture the download instead of saving it.
-    let saved = null;
-    const A = win().HTMLAnchorElement.prototype, click = A.click;
-    A.click = function () { saved = { href: this.href, name: this.download }; };
+    // Export: pick from the Export menu, and capture downloads instead of saving them.
+    async function exportVia(kind) {
+      let saved = null;
+      const A = win().HTMLAnchorElement.prototype, click = A.click;
+      A.click = function () { saved = { href: this.href, name: this.download }; };
+      $("exportBtn").click();
+      doc().querySelector('#menu [data-export="' + kind + '"]').click();
+      await sleep(50);
+      A.click = click;
+      return saved && { name: saved.name, text: await (await fetch(saved.href)).text() };
+    }
+    const json = await exportVia("json");
+    const exported = json && JSON.parse(json.text);
+    check("export downloads every todo", exported && exported.app === "todos" && exported.items.length === 4, json && json.name);
+
+    // Plain text: a numbered group per lane, done todos last and struck through, empty lanes skipped.
+    const struck = s => [...s].map(c => c + "\u0336").join("");
+    const expectedText = "p2\n\n1. Water the plants\n\n\np4\n\n1. write README\n2. " + struck("call the bank") + "\n3. " + struck("buy milk") + "\n";
+    const txt = await exportVia("txt");
+    check("exports plain text grouped by lane", txt && txt.name.endsWith(".txt") && txt.text === expectedText, txt && JSON.stringify(txt.text));
+    let copied = null;
+    win().navigator.clipboard.writeText = async t => { copied = t; };
     $("exportBtn").click();
-    A.click = click;
-    const exported = saved && JSON.parse(await (await fetch(saved.href)).text());
-    check("export downloads every todo", exported && exported.app === "todos" && exported.items.length === 4, saved && saved.name);
+    doc().querySelector('#menu [data-export="copy"]').click();
+    await waitFor(() => $("toastMsg").textContent.startsWith("Copied")); // the stub resolves first, the toast follows
+    check("copies the same text to the clipboard", copied === expectedText && $("toastMsg").textContent.startsWith("Copied 4 todos"), $("toastMsg").textContent);
 
     // Import a crafted file: markup must show as text, bad rows are skipped, ids merge.
     const before = stored().length;
