@@ -16,8 +16,17 @@
 </head>
 <body>
 <div class="app">
+  <section class="viewbar" id="viewBar" aria-label="Shared board" hidden>
+    <p id="viewText" aria-live="polite"></p>
+    <div class="viewbar-acts">
+      <button type="button" class="view-btn" id="viewKeep" hidden>Keep last copy</button>
+      <button type="button" class="view-btn" id="viewRemove" hidden>Remove</button>
+      <button type="button" class="view-btn" id="viewCopy" title="Copy every open todo into your Fridge">Copy to mine</button>
+      <button type="button" class="view-btn solid" id="viewBack">Back to my todos</button>
+    </div>
+  </section>
   <header class="top">
-    <h1>Todos <small id="summary"></small></h1>
+    <h1><span id="boardTitle">Todos</span><button type="button" class="switch" id="switchBtn" aria-haspopup="menu" title="Switch boards (`)" hidden><span id="switchName">Todos</span><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg></button> <small id="summary"></small></h1>
     <div class="top-acts">
       <button type="button" class="ghost-btn" id="exportBtn" aria-haspopup="menu" title="Copy or download your todos">Export</button>
       <button type="button" class="ghost-btn" id="importBtn" title="Add todos from an exported JSON file">Import</button>
@@ -55,7 +64,9 @@
     <span class="k"><kbd>E</kbd> edit</span>
     <span class="k"><kbd>F</kbd> expand group</span>
     <span class="k"><kbd>Ctrl</kbd><kbd>Z</kbd> undo anything</span>
+    <span class="view-keys" id="viewKeys" hidden><kbd>`</kbd> back to my todos · <kbd>C</kbd> add to mine · <kbd>F</kbd> expand group</span>
     <span class="status" id="status"></span>
+    <button type="button" class="ghost-btn clip-toggle share-on" id="shareStatus" aria-haspopup="dialog" hidden>Sharing live</button>
     <button type="button" class="ghost-btn clip-toggle" id="clipToggle" hidden></button>
     <button type="button" class="ghost-btn clip-toggle" id="claudeBtn" aria-haspopup="dialog" hidden>Connect Claude Code</button>
   </footer>
@@ -84,6 +95,35 @@
   <h3>Connected machines</h3>
   <ul class="machines" id="claudeMachines"></ul>
   <div class="dialog-acts"><button type="button" class="ghost-btn" id="claudeClose">Done</button></div>
+</dialog>
+
+<dialog class="dialog" id="shareDialog" aria-labelledby="shareTitle">
+  <h2 id="shareTitle">Share a live link</h2>
+  <label class="field" for="shareName">Your name, shown to people with the link</label>
+  <input type="text" class="text-field" id="shareName" maxlength="40" autocomplete="given-name" placeholder="e.g. Priya">
+  <fieldset class="opts">
+    <legend>What to include</legend>
+    <label><input type="checkbox" id="shareOpen"> Open todos</label>
+    <label><input type="checkbox" id="shareDone"> Done todos</label>
+  </fieldset>
+  <fieldset class="opts">
+    <legend>Lanes</legend>
+    <label><input type="checkbox" data-lane="h"> Boiling over</label>
+    <label><input type="checkbox" data-lane="m"> Simmering</label>
+    <label><input type="checkbox" data-lane="l"> Back burner</label>
+    <label><input type="checkbox" data-lane="n"> Fridge</label>
+  </fieldset>
+  <p class="warn">Anyone with this link can see these todos, and updates appear for them as you make changes.</p>
+  <div class="cmd" id="shareLinkBox" hidden><code id="shareLink"></code><button type="button" class="clip-yes" id="shareCopy">Copy link</button></div>
+  <p class="err" id="shareErr" role="alert" hidden>Couldn't reach the relay. Check your connection and try again.</p>
+  <div class="dialog-acts"><button type="button" class="ghost-btn" id="shareClose">Close</button><button type="button" class="clip-yes" id="shareCreate">Create link</button></div>
+</dialog>
+
+<dialog class="dialog" id="sharesDialog" aria-labelledby="sharesTitle">
+  <h2 id="sharesTitle">Shared links</h2>
+  <p class="muted">People with one of these links see your todos update live. They can't change anything.</p>
+  <ul class="machines shares" id="sharesList"></ul>
+  <div class="dialog-acts"><button type="button" class="ghost-btn" id="sharesNew">Share another…</button><button type="button" class="ghost-btn" id="sharesClose">Done</button></div>
 </dialog>
 
 <div class="menu" id="menu" role="menu" hidden></div>

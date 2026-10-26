@@ -21,10 +21,10 @@ Your local copy has its own `localStorage` (it's a different origin from the liv
 | File | What it does |
 | --- | --- |
 | `public/index.html` | Markup, and the Content Security Policy |
-| `public/app.js` | The board: lanes, drag and drop, list parsing, undo/redo, shortcuts, export/import |
+| `public/app.js` | The board: lanes, drag and drop, list parsing, undo/redo, shortcuts, export/import, Claude sessions, live sharing |
 | `public/storage.js` | Where todos are kept: localStorage always, plus an optional HTTP mirror. The API contract is at the top. |
 | `public/clipboard.js` | Decides whether copied text is safe to suggest (secret patterns). Add a case to `tests/smoke.html` when you change it. |
-| `public/relay.js` | Client for the relay: channels, pairing codes, the WebSocket, and AES-GCM + deflate encryption |
+| `public/relay.js` | Client for the relay: channels, state, pairing codes, the WebSocket, and AES-GCM + deflate encryption |
 | `public/config.js` | Per-deploy settings |
 | `public/styles.css` | Styles, light and dark |
 | `tests/smoke.html` | End-to-end checks that drive the app in an iframe |
@@ -33,7 +33,7 @@ Your local copy has its own `localStorage` (it's a different origin from the liv
 
 ## Before you open a pull request
 
-- `tests/run.sh` passes. It runs `tests/smoke.html` in headless Chrome. Set `CHROME=/path/to/browser` if it can't find one. You can also just open the test page and look for `PASS`.
+- `tests/run.sh` passes. It runs `tests/smoke.html` in headless Chrome. Set `CHROME=/path/to/browser` if it can't find one. (If it hangs with `RUNNING`, that Chrome build doesn't honour `--virtual-time-budget`; point `CHROME` at a `chrome-headless-shell` binary instead.) You can also just open the test page and look for `PASS`.
 - New behaviour has a check in `tests/smoke.html`.
 - UI changes include a before/after screenshot in the PR, in light and dark mode if colours changed.
 - One topic per PR. Small PRs get reviewed faster.

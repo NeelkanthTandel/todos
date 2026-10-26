@@ -17,6 +17,7 @@
     move:  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3 2 6l3 3M2 6h9M11 13l3-3-3-3M14 10H5"/></svg>',
     wip:   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5.6"/><path d="M8 2.4a5.6 5.6 0 0 1 0 11.2z" fill="currentColor" stroke="none"/></svg>',
     grip:  '<svg viewBox="0 0 8 14" fill="currentColor"><circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/><circle cx="2" cy="7" r="1.2"/><circle cx="6" cy="7" r="1.2"/><circle cx="2" cy="12" r="1.2"/><circle cx="6" cy="12" r="1.2"/></svg>',
+    plus:  '<svg viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M7 2.5v9M2.5 7h9"/></svg>',
     session: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2.25"/><path d="m4.75 6.25 2 1.75-2 1.75M8.5 10h2.75"/></svg>',
   };
   function heat(k) {
@@ -31,6 +32,10 @@
 
   // ---------- state ----------
   let items = [];               // {id, text, done, prio, created, doneAt?, wip?, session?}
+  // A board someone shared with you, while you're looking at it (see "live sharing" below). `items` stays your
+  // own list the whole time; the shared board is only ever rendered, never edited.
+  let viewing = null;
+  const viewItems = () => (viewing ? viewing.items : items);
   let editingId = null, justId = null, enterIds = new Set(), landedId = null;
   const linger = new Map();     // id -> timer: just-done items still shown in lane
   const lsGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
@@ -111,6 +116,7 @@
       if (!storageFull) toast("Browser storage is full. Export a backup, then clear some done todos.");
       storageFull = true;
     } else storageFull = false;
+    scheduleShares();
     if (!remote) return;
     lsSet(PENDING_KEY, "1");
     if (docRef) { dirty = true; setStatus("Saving…"); flush(); }
@@ -129,6 +135,7 @@
     items = next;
     past.length = 0; future.length = 0; // older snapshots would undo the other tab's work
     lsSet(LS_KEY, JSON.stringify(items));
+    scheduleShares();
     adopting = true; render(); adopting = false;
     const ed2 = draft && editingId && $("edit-" + editingId);
     if (ed2) { ed2.value = draft[0]; requestAnimationFrame(() => ed2.setSelectionRange(draft[1], draft[2])); }
@@ -213,6 +220,7 @@
   }
 
   function row(t, inPanel) {
+    if (viewing) return viewRow(t, inPanel);
     const li = document.createElement("li");
     li.dataset.id = t.id; li.dataset.prio = t.prio;
     if (t.done) li.classList.add("done");
@@ -269,15 +277,17 @@
   function esc(s) { return s.replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 
   function render() {
+    const all = viewItems();
     for (const l of LANES) {
-      const list = items.filter(t => t.prio === l.k && inLane(t));
+      const list = all.filter(t => t.prio === l.k && inLane(t));
       $("list-" + l.k).replaceChildren(...list.map(t => row(t, false)));
       $("empty-" + l.k).hidden = list.length > 0;
-      $("count-" + l.k).textContent = items.filter(t => t.prio === l.k && !t.done).length;
+      $("empty-" + l.k).textContent = viewing ? "Nothing here." : l.empty;
+      $("count-" + l.k).textContent = all.filter(t => t.prio === l.k && !t.done).length;
     }
-    const open = items.filter(t => !t.done).length;
-    const done = items.filter(t => t.done).length;
-    $("summary").textContent = items.length ? open + " open" : "";
+    const open = all.filter(t => !t.done).length;
+    const done = all.filter(t => t.done).length;
+    $("summary").textContent = all.length ? open + " open" : "";
     $("doneN").textContent = done;
     renderPanel();
     updateTitle();
@@ -294,13 +304,14 @@
   }
   function renderPanel() {
     const body = $("panelBody");
-    const done = items.filter(t => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
-    $("clearDone").hidden = done.length === 0;
+    const done = viewItems().filter(t => t.done).sort((a, b) => (b.doneAt || 0) - (a.doneAt || 0));
+    $("clearDone").hidden = done.length === 0 || !!viewing;
     if (!done.length) { body.innerHTML = '<p class="panel-empty">Nothing done yet. Tick a todo and it lands here.</p>'; return; }
     const frag = document.createDocumentFragment();
     let cur = null, ul = null;
     for (const t of done) {
-      const lbl = dayLabel(t.doneAt || t.created || Date.now());
+      // A shared board carries no timestamps, so its done todos are one group.
+      const lbl = viewing ? "Done on " + possessive(viewing.name) + " board" : dayLabel(t.doneAt || t.created || Date.now());
       if (lbl !== cur) {
         cur = lbl;
         const h = document.createElement("h3"); h.textContent = lbl; frag.append(h);
@@ -313,6 +324,7 @@
 
   // ---------- actions ----------
   function add(raw, prio) {
+    if (blocked()) return 0;
     const parsed = parse(raw); if (!parsed.length) return 0;
     const before = snap();
     const now = Date.now();
@@ -330,6 +342,7 @@
   }
 
   function toggle(id) {
+    if (blocked()) return;
     const t = find(id); if (!t) return;
     const before = snap();
     t.done = !t.done;
@@ -352,6 +365,7 @@
   }
 
   function remove(id) {
+    if (blocked()) return;
     const i = items.findIndex(t => t.id === id); if (i < 0) return;
     const before = snap();
     items.splice(i, 1); linger.delete(id);
@@ -361,6 +375,7 @@
   }
 
   function moveTo(id, prio, beforeId) {
+    if (blocked()) return;
     const t = find(id); if (!t) return;
     const before = snap();
     const i = items.indexOf(t); items.splice(i, 1);
@@ -379,6 +394,7 @@
   }
 
   function commitEdit(id, value, cancel) {
+    if (blocked()) { editingId = null; render(); return; }
     const t = find(id); editingId = null;
     if (t && !cancel) {
       const v = value.trim();
@@ -388,6 +404,7 @@
     render(); focusRow(id);
   }
   function focusRow(id, sel = ".text") {
+    if (viewing) sel = ".act"; // a shared row's only button
     const el = document.querySelector('li[data-id="' + CSS.escape(id) + '"] ' + sel);
     if (el) { el.focus({ preventScroll: true }); el.scrollIntoView({ block: "nearest" }); }
   }
@@ -442,6 +459,7 @@
   });
   $("addForm").addEventListener("submit", e => {
     e.preventDefault();
+    if (blocked()) return;
     const n0 = parse(input.value).length;
     const prio = effectivePick(n0);
     const n = add(input.value, prio);
@@ -489,7 +507,7 @@
     finally { window.dispatchEvent(new Event("todos:clipcheck")); } // lets tests/smoke.html know a check finished
   }
   async function lookAtClipboard() {
-    if (!clipOn() || clipBusy || clip || document.visibilityState !== "visible" || !composerIdle()) return;
+    if (viewing || !clipOn() || clipBusy || clip || document.visibilityState !== "visible" || !composerIdle()) return;
     clipBusy = true;
     try {
       const text = (await navigator.clipboard.readText()).trim();
@@ -499,7 +517,7 @@
       if (clipSeen.has(hash) || age > CLIP_EXPIRE || !TodoClipboard.check(text).ok) return;
       const lower = text.toLowerCase();
       if (items.some(t => t.text.toLowerCase() === lower)) return;
-      if (!composerIdle()) return; // you started something while we were reading
+      if (!composerIdle() || viewing) return; // you started something (or switched boards) while we were reading
       showClip(hash, text, CLIP_EXPIRE - age);
     } catch {
       // Not focused, or permission withdrawn: try again next time, unless access is now blocked for good.
@@ -550,7 +568,7 @@
     }
     input.focus();
   }
-  input.addEventListener("paste", () => { if (clipSupported && !lsGet(CLIP_KEY)) $("clipOffer").hidden = false; });
+  input.addEventListener("paste", () => { if (!viewing && clipSupported && !lsGet(CLIP_KEY)) $("clipOffer").hidden = false; });
   $("clipOn").addEventListener("click", enableClip);
   $("clipNo").addEventListener("click", () => { $("clipOffer").hidden = true; setClip("off"); input.focus(); });
   $("clipToggle").addEventListener("click", () => {
@@ -570,6 +588,7 @@
     const btn = e.target.closest("[data-act]"); if (!btn) return;
     const li = btn.closest("li"); const id = li.dataset.id;
     const act = btn.dataset.act;
+    if (viewing) { if (act === "copy") copyToMine([id]); else blocked(); return; }
     if (act === "toggle") { toggle(id); requestAnimationFrame(() => focusRow(id, ".check")); }
     else if (act === "delete") remove(id);
     else if (act === "edit") { editingId = id; render(); }
@@ -578,6 +597,7 @@
     else if (act === "session") copyResume(id);
   }
   function toggleWip(id) {
+    if (blocked()) return;
     const t = find(id); if (!t || t.done) return;
     const before = snap();
     t.wip = !t.wip; if (!t.wip) delete t.wip;
@@ -616,6 +636,11 @@
   function rowAction(li, k, viaHover) {
     const id = li.dataset.id;
     const inBoard = !!li.closest(".board");
+    if (viewing) {
+      if (k === "c" || k === "C") { copyToMine([id]); return true; }
+      if (/^([1-4sSxXeE]|Delete|Backspace)$/.test(k)) { blocked(); return true; }
+      return false;
+    }
     const keep = sel => { if (!viaHover) focusRow(id, sel); };
     if (inBoard && /^[1-4]$/.test(k)) { if (find(id)?.prio !== ORDER[+k - 1]) moveTo(id, ORDER[+k - 1]); keep(); return true; }
     if (inBoard && (k === "s" || k === "S")) { toggleWip(id); keep(); return true; }
@@ -668,7 +693,7 @@
   }
   board.addEventListener("dragstart", e => {
     const li = e.target.closest && e.target.closest("li[data-id]");
-    if (!li || editingId) { e.preventDefault(); return; }
+    if (!li || editingId || viewing) { e.preventDefault(); if (viewing) blocked(); return; }
     dragId = li.dataset.id; closeMenu();
     e.dataTransfer.effectAllowed = "move";
     try { e.dataTransfer.setData("text/plain", find(dragId)?.text || ""); } catch {}
@@ -693,7 +718,7 @@
     if (ph.parentNode !== ul || ph.nextElementSibling !== before) ul.insertBefore(ph, before);
   });
   board.addEventListener("drop", e => {
-    if (!dragId) return;
+    if (!dragId || viewing) return;
     const lane = e.target.closest(".lane"); if (!lane) return;
     e.preventDefault();
     let beforeId = null;
@@ -766,6 +791,7 @@
   menu.addEventListener("click", e => {
     const x = e.target.closest("button[data-export]");
     if (x) { closeMenu(true); exportAs(x.dataset.export); return; }
+    if (switcherClick(e)) return;
     const b = e.target.closest("button[data-prio]"); if (!b) return;
     const id = menuFor; closeMenu();
     if (find(id)?.prio !== b.dataset.prio) moveTo(id, b.dataset.prio);
@@ -776,10 +802,10 @@
     const i = btns.indexOf(document.activeElement);
     if (e.key === "ArrowDown") { e.preventDefault(); btns[(i + 1) % btns.length].focus(); }
     else if (e.key === "ArrowUp") { e.preventDefault(); btns[(i - 1 + btns.length) % btns.length].focus(); }
-    else if (/^[1-4]$/.test(e.key)) { e.preventDefault(); btns[+e.key - 1].click(); }
+    else if (/^[1-4]$/.test(e.key)) { e.preventDefault(); btns[+e.key - 1]?.click(); }
     else if (e.key === "Escape" || e.key === "Tab") { e.preventDefault(); e.stopPropagation(); closeMenu(true); }
   });
-  document.addEventListener("pointerdown", e => { if (!menu.hidden && !menu.contains(e.target) && !e.target.closest('[data-act="move"], #exportBtn')) closeMenu(); });
+  document.addEventListener("pointerdown", e => { if (!menu.hidden && !menu.contains(e.target) && !e.target.closest('[data-act="move"], #exportBtn, #switchBtn')) closeMenu(); });
   window.addEventListener("resize", () => { closeMenu(); syncInput(); });
   board.addEventListener("scroll", () => closeMenu(), true);
 
@@ -804,6 +830,7 @@
   let clearTimer = null;
   function resetClear() { const c = $("clearDone"); c.classList.remove("confirm"); c.textContent = "Clear all"; clearTimeout(clearTimer); }
   $("clearDone").addEventListener("click", () => {
+    if (blocked()) return;
     const c = $("clearDone");
     if (!c.classList.contains("confirm")) {
       c.classList.add("confirm"); c.textContent = "Click again to clear";
@@ -823,11 +850,17 @@
     { k: "txt", name: "Download as text (.txt)" },
     { k: "json", name: "Download backup (.json)" },
   ];
+  const SHARE_EXPORTS = [
+    { k: "share", name: "Share live link…" },
+    { k: "shares", name: "Shared links" },
+  ];
   $("exportBtn").addEventListener("click", e => {
     if (!menu.hidden && menuBtn === e.currentTarget) { closeMenu(); return; }
     closeMenu();
     menuFor = null; menuBtn = e.currentTarget;
-    menu.innerHTML = '<p>Export</p>' + EXPORTS.map((x, i) =>
+    // Viewing a shared board: text only (a backup is of your own list). With a relay: live sharing.
+    const list = viewing ? EXPORTS.filter(x => x.k !== "json") : EXPORTS.concat(relay ? SHARE_EXPORTS.filter(x => x.k === "share" || ownShares().length) : []);
+    menu.innerHTML = '<p>Export</p>' + list.map((x, i) =>
       '<button role="menuitem" data-export="' + x.k + '"><span>' + x.name + '</span><kbd>' + (i + 1) + '</kbd></button>').join("");
     placeMenu(e.currentTarget);
     menu.querySelector("button").focus();
@@ -838,8 +871,8 @@
   function asText() {
     const groups = [];
     LANES.forEach((l, i) => {
-      const open = items.filter(t => t.prio === l.k && !t.done).map(t => t.text);
-      const done = items.filter(t => t.prio === l.k && t.done)
+      const open = viewItems().filter(t => t.prio === l.k && !t.done).map(t => t.text);
+      const done = viewItems().filter(t => t.prio === l.k && t.done)
         .sort((a, b) => (a.doneAt || 0) - (b.doneAt || 0)).map(t => strike(t.text));
       const lines = [...open, ...done];
       if (lines.length) groups.push("p" + (i + 1) + "\n\n" + lines.map((x, j) => (j + 1) + ". " + x).join("\n"));
@@ -854,8 +887,12 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
   async function exportAs(kind) {
-    if (!items.length) { toast("Nothing to export yet"); return; }
-    const count = items.length + (items.length === 1 ? " todo" : " todos");
+    if (kind === "share") { openShareDialog(null); return; }
+    if (kind === "shares") { openSharesDialog(); return; }
+    const all = viewItems();
+    if (!all.length) { toast("Nothing to export yet"); return; }
+    if (viewing && kind === "json") return; // a backup is of your own list
+    const count = all.length + (all.length === 1 ? " todo" : " todos");
     const day = new Date().toISOString().slice(0, 10);
     if (kind === "copy") {
       const text = asText();
@@ -876,10 +913,10 @@
 
   // ---------- import a JSON backup ----------
   const MAX_IMPORT_BYTES = 2e6, MAX_IMPORT_ITEMS = 5000;
-  $("importBtn").addEventListener("click", () => $("importFile").click());
+  $("importBtn").addEventListener("click", () => { if (!blocked()) $("importFile").click(); });
   $("importFile").addEventListener("change", async e => {
     const file = e.target.files[0]; e.target.value = "";
-    if (!file) return;
+    if (!file || blocked()) return;
     if (file.size > MAX_IMPORT_BYTES) { toast("That file is too big to import (2 MB max)"); return; }
     let incoming;
     try {
@@ -890,6 +927,7 @@
     if (incoming.length > MAX_IMPORT_ITEMS) { toast("That file has more than " + MAX_IMPORT_ITEMS + " todos"); return; }
     incoming = normalize(incoming);
     if (!incoming.length) { toast("No todos in that file"); return; }
+    if (blocked()) return; // switched to a shared board while the file was read
     // Merge by id: a todo in the file replaces the same todo here, everything else is kept.
     const before = snap();
     const byId = new Map(incoming.map(t => [t.id, t]));
@@ -1019,6 +1057,7 @@
     if (crypto.subtle) rememberClip(await sha256(cmd)); // not a clipboard suggestion
   }
   function updateTitle() {
+    if (viewing) { document.title = possessive(viewing.name) + " todos (shared)"; return; }
     const ids = new Set();
     for (const s of trayList()) if (s.state === "needs_you") ids.add(s.id);
     for (const t of items) if (t.session && !t.done && t.session.state === "needs_you") ids.add(t.session.id);
@@ -1076,7 +1115,7 @@
     const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("#trayList li");
     const keep = focused && focused.dataset.session;
     ul.replaceChildren(...list.map(card));
-    $("tray").hidden = list.length === 0;
+    $("tray").hidden = list.length === 0 || !!viewing;
     const again = keep && ul.querySelector('li[data-session="' + CSS.escape(keep) + '"]');
     const edit = trayEdit && ul.querySelector(".tray-edit");
     if (edit) { edit.focus(); edit.setSelectionRange(edit.value.length, edit.value.length); }
@@ -1086,7 +1125,7 @@
   }
   function addSession(id, prio, text) {
     const s = sessions.get(id);
-    if (!s) return;
+    if (!s || blocked()) return;
     trayEdit = null;
     const before = snap();
     const t = {
@@ -1116,6 +1155,7 @@
   // Card shortcuts, for a focused card and the card under the mouse (like rowAction for todos).
   function trayAction(li, k, viaHover) {
     const id = li.dataset.session;
+    if (viewing) return false;
     if (k === "Enter" || k === "1") { addSession(id, "h"); return true; }
     if (/^[2-4]$/.test(k)) { addSession(id, ORDER[+k - 1]); return true; }
     if (k === "e" || k === "E") { trayEdit = { id, value: sessions.get(id)?.title || "" }; renderTray(); return true; }
@@ -1126,7 +1166,7 @@
     return false;
   }
   function hoveredCard() {
-    if (!ptr || dragId || editingId || trayEdit) return null;
+    if (!ptr || dragId || editingId || trayEdit || viewing) return null;
     const el = document.elementFromPoint(ptr.x, ptr.y);
     return (el && el.closest("#trayList li[data-session]")) || null;
   }
@@ -1172,6 +1212,7 @@
     inbox = loadInbox();
     if (inbox && inbox.relay !== relay.base) inbox = null; // made on a different relay
     if (inbox) follow();
+    relayStarted();
   }
   function follow() {
     if (sub) sub.close();
@@ -1285,6 +1326,515 @@
     refreshDialog();
   });
 
+  // ---------- live sharing: your side ----------
+  // A share is a `share` channel on the relay holding an encrypted snapshot of (part of) your board. Anyone with
+  // the link (channel id + key, after the #, which browsers never send) watches it live. Only this browser has
+  // the owner token, so only this browser can change what they see.
+  const SHARES_KEY = NS + ".shares", SHARE_NAME_KEY = NS + ".shareName";
+  const CHANNEL_RE = /^[\w-]{22}$/, KEY_RE = /^[\w-]{43}$/;
+  const SHARE_DEBOUNCE = 1000;
+  const cleanName = n => (typeof n === "string" ? n.replace(/\s+/g, " ").trim().slice(0, 40) : "");
+  const possessive = n => (n || "Someone") + "'s";
+  function normOptions(o) {
+    o = o && typeof o === "object" ? o : {};
+    const lanes = {};
+    for (const k of ORDER) lanes[k] = !(o.lanes && o.lanes[k] === false);
+    return { open: o.open !== false, done: o.done === true, lanes };
+  }
+  function loadShares() {
+    try {
+      const arr = JSON.parse(lsGet(SHARES_KEY) || "[]");
+      return (Array.isArray(arr) ? arr : [])
+        .filter(x => x && CHANNEL_RE.test(x.id) && KEY_RE.test(x.key) && typeof x.ownerToken === "string" && typeof x.relay === "string")
+        .map(x => ({ id: x.id, key: x.key, ownerToken: x.ownerToken, relay: x.relay, name: cleanName(x.name), options: normOptions(x.options),
+          createdAt: num(x.createdAt), sent: typeof x.sent === "string" ? x.sent : "" }));
+    } catch { return []; }
+  }
+  let shares = loadShares(), shareTimer = null, shareTries = 0, sharePushing = false;
+  const saveShares = () => lsSet(SHARES_KEY, JSON.stringify(shares));
+  const ownShares = () => (relay ? shares.filter(x => x.relay === relay.base) : []);
+  const shareLink = x => location.origin + location.pathname + "#share=" + x.id + "." + x.key;
+  function updateShareStatus() { $("shareStatus").hidden = !ownShares().length; }
+
+  // What a viewer gets: { v: 1, name, at, lanes: [[{ t, d?: 1, w?: 1 }, …] ×4] }. Only the included lanes and
+  // todos, and nothing else: no ids, timestamps or Claude session details.
+  function snapshot(x) {
+    const o = x.options;
+    return { v: 1, name: x.name, at: Date.now(), lanes: ORDER.map(k => !o.lanes[k] ? [] : items
+      .filter(t => t.prio === k && (t.done ? o.done : o.open))
+      .map(t => Object.assign({ t: t.text }, t.done ? { d: 1 } : t.wip ? { w: 1 } : {}))) };
+  }
+  // After a save, debounced: each share whose snapshot changed gets the new one.
+  function scheduleShares(now) {
+    if (!relay || !ownShares().length) return;
+    clearTimeout(shareTimer);
+    shareTimer = setTimeout(pushShares, now ? 0 : SHARE_DEBOUNCE);
+  }
+  async function pushShares() {
+    shareTimer = null;
+    if (sharePushing) { scheduleShares(); return; }
+    sharePushing = true;
+    let retry = false;
+    try {
+      for (const x of ownShares()) {
+        const snap = snapshot(x);
+        const hash = await sha256(JSON.stringify([snap.name, snap.lanes]));
+        if (hash === x.sent) continue;
+        try {
+          await relay.putState(x, await TodoRelay.encrypt(x.key, snap));
+          x.sent = hash; saveShares();
+        } catch (e) {
+          const st = e && e.status;
+          if (st === 404 || st === 401) { dropShare(x); toast("A shared link expired, so it's no longer live"); }
+          else if (st === 413) toast("Too many todos to share live. Include fewer in Shared links.");
+          else retry = true; // offline, rate-limited or the relay is down: try again shortly
+        }
+      }
+    } finally { sharePushing = false; }
+    if (retry) { clearTimeout(shareTimer); shareTimer = setTimeout(pushShares, backoff(shareTries++)); }
+    else shareTries = 0;
+    window.dispatchEvent(new Event("todos:sharepush")); // lets tests/smoke.html know a push finished
+  }
+  function dropShare(x) {
+    shares = shares.filter(s => s.id !== x.id);
+    saveShares(); updateShareStatus();
+  }
+  async function stopSharing(x) {
+    try { await relay.remove(x); }
+    catch (e) {
+      if (!(e && (e.status === 404 || e.status === 401))) { toast("Couldn't stop sharing. Check your connection and try again."); return false; }
+    }
+    dropShare(x);
+    toast("Stopped sharing. That link no longer shows your todos.");
+    return true;
+  }
+  async function copyLink(x) {
+    const link = shareLink(x);
+    try { await navigator.clipboard.writeText(link); } catch { toast("Couldn't copy. Select the link and copy it."); return; }
+    toast("Link copied");
+    if (crypto.subtle) rememberClip(await sha256(link)); // not a clipboard suggestion
+  }
+
+  // The share dialog: create a link, or change what an existing one includes.
+  const shareDlg = $("shareDialog"), sharesDlg = $("sharesDialog");
+  let shareEditing = null;
+  function openShareDialog(x) {
+    if (!relay) return;
+    shareEditing = x;
+    const o = x ? x.options : normOptions(null);
+    $("shareName").value = x ? x.name : cleanName(lsGet(SHARE_NAME_KEY));
+    $("shareOpen").checked = o.open; $("shareDone").checked = o.done;
+    for (const b of shareDlg.querySelectorAll("input[data-lane]")) b.checked = o.lanes[b.dataset.lane];
+    $("shareErr").hidden = true;
+    showShareLink();
+    if (sharesDlg.open) sharesDlg.close();
+    shareDlg.showModal();
+    $("shareName").focus();
+  }
+  function showShareLink() {
+    $("shareTitle").textContent = shareEditing ? "Change what's included" : "Share a live link";
+    $("shareLinkBox").hidden = !shareEditing;
+    $("shareLink").textContent = shareEditing ? shareLink(shareEditing) : "";
+    $("shareCreate").textContent = shareEditing ? "Save" : "Create link";
+  }
+  function readShareForm() {
+    const lanes = {};
+    for (const b of shareDlg.querySelectorAll("input[data-lane]")) lanes[b.dataset.lane] = b.checked;
+    return { name: cleanName($("shareName").value), options: normOptions({ open: $("shareOpen").checked, done: $("shareDone").checked, lanes }) };
+  }
+  $("shareCreate").addEventListener("click", async () => {
+    const f = readShareForm();
+    lsSet(SHARE_NAME_KEY, f.name);
+    if (shareEditing) {
+      Object.assign(shareEditing, f, { sent: "" });
+      saveShares(); scheduleShares(true);
+      shareDlg.close(); toast("Updated what this link shows");
+      return;
+    }
+    const btn = $("shareCreate");
+    btn.disabled = true; $("shareErr").hidden = true;
+    try {
+      const r = await relay.create("share");
+      if (!r || !CHANNEL_RE.test(r.id) || typeof r.ownerToken !== "string") throw new Error("bad reply");
+      const x = Object.assign({ id: r.id, key: TodoRelay.newKey(), ownerToken: r.ownerToken, relay: relay.base, createdAt: Date.now(), sent: "" }, f);
+      shares.push(x); saveShares(); updateShareStatus();
+      shareEditing = x; showShareLink();
+      scheduleShares(true);
+      $("shareCopy").focus();
+      announce("Link created. Anyone with it can see these todos.");
+    } catch { $("shareErr").hidden = false; }
+    btn.disabled = false;
+  });
+  $("shareCopy").addEventListener("click", () => { if (shareEditing) copyLink(shareEditing); });
+  $("shareClose").addEventListener("click", () => shareDlg.close());
+
+  // Shared links: every active share, with Copy link, Change what's included and Stop sharing.
+  function describeShare(o) {
+    const what = [o.open && "open", o.done && "done"].filter(Boolean).join(" and ") || "no";
+    const lanes = ORDER.filter(k => o.lanes[k]);
+    return what[0].toUpperCase() + what.slice(1) + " todos · " +
+      (lanes.length === 4 ? "all lanes" : lanes.length ? lanes.map(k => LANE[k].short).join(", ") : "no lanes");
+  }
+  function renderShares() {
+    const ul = $("sharesList"), list = ownShares();
+    if (!list.length) {
+      const li = document.createElement("li"); li.className = "muted"; li.textContent = "Nothing is shared right now.";
+      ul.replaceChildren(li); return;
+    }
+    ul.replaceChildren(...list.map(x => {
+      const li = document.createElement("li");
+      const name = document.createElement("span"); name.className = "machine";
+      name.textContent = possessive(x.name) + " todos";
+      const small = document.createElement("small"); small.textContent = " " + describeShare(x.options);
+      name.append(small);
+      const btn = (act, label) => {
+        const b = document.createElement("button"); b.type = "button"; b.className = "ghost-btn";
+        b.dataset.sact = act; b.dataset.sid = x.id; b.textContent = label; return b;
+      };
+      li.append(name, btn("copy", "Copy link"), btn("edit", "Change what's included"), btn("stop", "Stop sharing"));
+      return li;
+    }));
+  }
+  function openSharesDialog() { renderShares(); sharesDlg.showModal(); }
+  $("sharesList").addEventListener("click", async e => {
+    const b = e.target.closest("button[data-sact]"); if (!b) return;
+    const x = ownShares().find(s => s.id === b.dataset.sid); if (!x) return;
+    if (b.dataset.sact === "copy") copyLink(x);
+    else if (b.dataset.sact === "edit") openShareDialog(x);
+    else if (!b.classList.contains("confirm")) { b.classList.add("confirm"); b.textContent = "Click again to stop"; }
+    else { b.disabled = true; if (await stopSharing(x)) renderShares(); else b.disabled = false; }
+  });
+  $("sharesNew").addEventListener("click", () => openShareDialog(null));
+  $("sharesClose").addEventListener("click", () => sharesDlg.close());
+  $("shareStatus").addEventListener("click", openSharesDialog);
+  for (const d of [shareDlg, sharesDlg]) d.addEventListener("click", e => { if (e.target === d) d.close(); });
+
+  // ---------- live sharing: viewing someone else's board ----------
+  // Opening a link saves the board under todos.shared (never in todos.v1) and shows it, read-only, in place of
+  // yours. Every write path checks blocked(); the only write allowed is copying todos into your own list.
+  const SHARED_KEY = NS + ".shared", LAST_SHARED_KEY = NS + ".lastShared";
+  const MAX_SHARED_ITEMS = 5000;
+  const COPY_LABEL = "copy to my list";
+  // A decrypted snapshot is untrusted: the right shape or nothing, known fields only, text capped like normalize().
+  function normShare(s) {
+    if (!s || typeof s !== "object" || Array.isArray(s) || s.v !== 1 || !Array.isArray(s.lanes) || s.lanes.length !== 4) return null;
+    if (!s.lanes.every(Array.isArray)) return null;
+    let n = 0;
+    const lanes = s.lanes.map(l => {
+      const out = [];
+      for (const x of l) {
+        if (n >= MAX_SHARED_ITEMS) break;
+        if (!x || typeof x !== "object" || typeof x.t !== "string" || !x.t.trim()) continue;
+        const it = { t: x.t.trim().slice(0, 500) };
+        if (x.d === 1) it.d = 1; else if (x.w === 1) it.w = 1;
+        out.push(it); n++;
+      }
+      return out;
+    });
+    return { v: 1, name: cleanName(s.name), at: Math.min(num(s.at), Date.now()), lanes };
+  }
+  function sharedItems(st) {
+    const out = [];
+    if (st) st.lanes.forEach((l, i) => l.forEach((x, j) => {
+      const t = { id: "v" + i + "-" + j, text: x.t, done: x.d === 1, prio: ORDER[i], created: 0 };
+      if (t.done) t.doneAt = 0; else if (x.w) t.wip = true;
+      out.push(t);
+    }));
+    return out;
+  }
+  function loadShared() {
+    const out = [];
+    try {
+      const arr = JSON.parse(lsGet(SHARED_KEY) || "[]");
+      for (const x of Array.isArray(arr) ? arr : []) {
+        if (!x || !CHANNEL_RE.test(x.id) || !KEY_RE.test(x.key) || out.some(s => s.id === x.id)) continue;
+        const lastState = normShare(x.lastState);
+        out.push({ id: x.id, key: x.key, name: cleanName(x.name) || (lastState ? lastState.name : ""), lastState,
+          lastSeenAt: num(x.lastSeenAt), version: num(x.version), stopped: x.stopped === true, kept: x.kept === true });
+      }
+    } catch {}
+    return out;
+  }
+  let shared = loadShared(), viewSub = null, viewStatus = "offline";
+  const saveShared = () => lsSet(SHARED_KEY, JSON.stringify(shared.map(({ id, key, name, lastState, lastSeenAt, version, stopped, kept }) =>
+    ({ id, key, name, lastState, lastSeenAt, version, stopped, kept }))));
+  const sharedById = id => shared.find(s => s.id === id);
+
+  function blocked() {
+    if (!viewing) return false;
+    toast("Read-only: this is " + possessive(viewing.name) + " list");
+    return true;
+  }
+  function setHash(h) {
+    try { history.replaceState(history.state, "", location.pathname + location.search + h); } catch {}
+  }
+
+  function view(id) {
+    const x = sharedById(id);
+    if (!x) return;
+    if (viewing !== x) closeView();
+    viewing = x; x.items = sharedItems(x.lastState);
+    lsSet(LAST_SHARED_KEY, x.id);
+    setHash("#shared=" + x.id); // never leave the key in the address bar
+    editingId = null; trayEdit = null; clearDrag(); closeMenu();
+    if (clip) endClip();
+    applyViewMode();
+    if (!viewSub) connectView();
+    render(); renderTray();
+    announce("Viewing " + possessive(x.name) + " todos. Read-only.");
+  }
+  function viewMine() {
+    if (!viewing) return;
+    closeView(); viewing = null;
+    setHash("");
+    applyViewMode(); render(); renderTray();
+    announce("Back to your todos");
+  }
+  function closeView() { if (viewSub) { viewSub.close(); viewSub = null; } }
+  // ` (backtick): your board ↔ the shared board you looked at last.
+  function toggleBoards() {
+    if (viewing) { viewMine(); return; }
+    const last = sharedById(lsGet(LAST_SHARED_KEY)) || shared[0];
+    if (last) view(last.id); else toast("No shared boards yet. Open a share link to add one.");
+  }
+  function applyViewMode() {
+    const on = !!viewing;
+    document.documentElement.classList.toggle("viewing", on);
+    $("addForm").inert = on; $("importBtn").hidden = on;
+    if (on) $("clipOffer").hidden = true;
+    $("viewBar").hidden = !on; $("viewKeys").hidden = !on;
+    renderBanner(); renderSwitcher(); updateTitle();
+  }
+
+  function connectView() {
+    closeView();
+    const x = viewing;
+    if (!x) return;
+    if (x.stopped || !relay) { viewStatus = x.stopped ? "stopped" : "offline"; renderBanner(); return; }
+    viewStatus = "connecting"; renderBanner();
+    const id = x.id;
+    viewSub = relay.subscribe({ id }, ev => onShareEvent(id, ev), st => {
+      if (!viewing || viewing.id !== id) return;
+      viewStatus = st === "open" ? "live" : "offline";
+      if (st !== "open") checkStopped(id);
+      renderBanner();
+    });
+  }
+  // A socket can't say why it failed, so ask: a 404 means the owner stopped sharing.
+  async function checkStopped(id) {
+    try { await relay.getState({ id }); }
+    catch (e) { if (e && e.status === 404) markStopped(id); }
+  }
+  async function onShareEvent(id, ev) {
+    try {
+      if (ev.type === "deleted") { markStopped(id); return; }
+      const x = sharedById(id);
+      if (!x || ev.type !== "state" || typeof ev.data !== "string" || ev.data.length > 400000) return;
+      const version = num(ev.version);
+      if (version < x.version) return; // an older copy arriving late
+      let st = null;
+      try { st = normShare(await TodoRelay.decrypt(x.key, ev.data, 4e6)); } catch {}
+      if (!st) return; // not a board we can read: keep showing what we have
+      Object.assign(x, { lastState: st, name: st.name || x.name, version, lastSeenAt: Date.now() });
+      saveShared();
+      if (viewing === x) {
+        x.items = sharedItems(st);
+        const keep = document.activeElement && document.activeElement.closest && document.activeElement.closest("li[data-id]");
+        render(); renderBanner(); renderSwitcher();
+        if (keep) focusRow(keep.dataset.id);
+      }
+    } finally {
+      window.dispatchEvent(new Event("todos:sharemsg")); // lets tests/smoke.html know a state was handled
+    }
+  }
+  function markStopped(id) {
+    const x = sharedById(id);
+    if (!x || x.stopped) return;
+    x.stopped = true; saveShared();
+    if (viewing === x) { closeView(); viewStatus = "stopped"; renderBanner(); }
+    renderSwitcher();
+  }
+  function removeShared(id) {
+    const x = sharedById(id);
+    if (!x) return;
+    shared = shared.filter(s => s !== x); saveShared();
+    if (viewing === x) viewMine();
+    renderSwitcher();
+    toast("Removed " + possessive(x.name) + " board");
+  }
+
+  // The banner: whose board, whether it's live, and that it's read-only. It can't be closed.
+  function renderBanner() {
+    const x = viewing;
+    if (!x) return;
+    const when = x.lastState ? x.lastState.at || x.lastSeenAt : 0;
+    const ago = when ? (age(when) === "just now" ? "just now" : age(when) + " ago") : "";
+    const b = document.createElement("b");
+    const stopped = x.stopped || viewStatus === "stopped";
+    let parts;
+    if (stopped && !x.kept) {
+      b.textContent = x.name || "The owner";
+      parts = [b, " stopped sharing", ago && " · last copy from " + ago];
+    } else {
+      b.textContent = possessive(x.name);
+      const state = stopped ? (ago ? "last copy from " + ago : "last copy") :
+        viewStatus === "live" ? "live" + (ago && " · updated " + ago) :
+        viewStatus === "connecting" ? "connecting…" + (ago && " · updated " + ago) :
+        "Offline" + (ago && " · last updated " + ago);
+      parts = ["Viewing ", b, " todos · " + state];
+    }
+    $("viewText").replaceChildren(...parts.filter(Boolean), " · read-only");
+    $("viewBar").dataset.status = stopped ? "stopped" : viewStatus;
+    $("viewRemove").hidden = $("viewKeep").hidden = !(stopped && !x.kept);
+    $("viewCopy").disabled = !x.items || !x.items.some(t => !t.done);
+  }
+  setInterval(() => { if (viewing) renderBanner(); }, 30e3); // "updated 2 min ago" keeps counting
+  $("viewBack").addEventListener("click", viewMine);
+  $("viewCopy").addEventListener("click", () => { if (viewing) copyToMine(viewing.items.filter(t => !t.done).map(t => t.id)); });
+  $("viewRemove").addEventListener("click", () => { if (viewing) removeShared(viewing.id); });
+  $("viewKeep").addEventListener("click", () => {
+    if (!viewing) return;
+    viewing.kept = true; saveShared(); renderBanner(); renderSwitcher();
+  });
+
+  // Copies go into your own Fridge with new ids, through record() so Undo takes them back out.
+  function copyToMine(ids) {
+    if (!viewing) return;
+    const have = new Set(items.filter(t => !t.done).map(t => t.text.toLowerCase()));
+    const picked = viewing.items.filter(t => ids.includes(t.id)), fresh = [];
+    for (const t of picked) {
+      const k = t.text.toLowerCase();
+      if (!have.has(k)) { have.add(k); fresh.push(t.text); }
+    }
+    if (!fresh.length) { toast(picked.length === 1 ? "That's already in your list" : "Those are all in your list already"); return; }
+    const before = snap(), now = Date.now();
+    fresh.forEach((text, i) => items.push({ id: uid(), text, done: false, prio: "n", created: now + i }));
+    record(COPY_LABEL, before);
+    save(); render(); renderBanner();
+    const msg = fresh.length === 1 ? "Added to your Fridge" : "Copied " + fresh.length + " todos to your Fridge";
+    toast(msg, "Undo", undo);
+    announce(msg);
+  }
+
+  // A shared board shows without anything that changes it: no grip, checkbox or edit, just Add to mine.
+  function viewRow(t, inPanel) {
+    const li = document.createElement("li");
+    li.dataset.id = t.id; li.dataset.prio = t.prio;
+    if (t.done) li.classList.add("done");
+    const cb = document.createElement("span"); cb.className = "check"; cb.setAttribute("aria-hidden", "true"); cb.innerHTML = ICON.check;
+    const txt = document.createElement("span"); txt.className = "text";
+    const s = document.createElement("span"); s.textContent = t.text; txt.append(s);
+    li.append(cb, txt);
+    if (t.wip && !t.done && !inPanel) {
+      li.classList.add("wip");
+      const chip = document.createElement("span"); chip.className = "chip"; chip.textContent = "In progress";
+      li.append(chip);
+    }
+    if (inPanel) {
+      const tag = document.createElement("span"); tag.className = "tag";
+      tag.innerHTML = heat(t.prio); tag.append(LANE[t.prio].short);
+      li.append(tag);
+    }
+    const acts = document.createElement("div"); acts.className = "acts";
+    const b = document.createElement("button"); b.type = "button"; b.className = "act copy"; b.dataset.act = "copy";
+    b.title = "Add to mine (C)"; b.setAttribute("aria-label", "Add to mine: " + t.text + (t.done ? " (done)" : t.wip ? " (in progress)" : ""));
+    b.innerHTML = ICON.plus;
+    acts.append(b); li.append(acts);
+    return li;
+  }
+
+  // The "Todos" heading becomes a switcher once you have a shared board: My todos, each shared board, Remove….
+  function renderSwitcher() {
+    const has = shared.length > 0;
+    $("boardTitle").hidden = has; $("switchBtn").hidden = !has;
+    $("switchName").textContent = viewing ? possessive(viewing.name) + " todos" : "Todos";
+  }
+  function sharedLabel(x) {
+    const state = x.stopped ? (x.kept ? "last copy" : "stopped") : viewing === x && viewStatus === "offline" ? "offline" : "live";
+    return possessive(x.name) + " · " + state;
+  }
+  function openSwitcher(btn, removing) {
+    closeMenu();
+    menuFor = null; menuBtn = btn;
+    const p = document.createElement("p"); p.textContent = removing ? "Remove a shared board" : "Boards";
+    menu.replaceChildren(p);
+    const item = (label, data, current) => {
+      const b = document.createElement("button"); b.setAttribute("role", "menuitem");
+      Object.assign(b.dataset, data);
+      if (current) b.setAttribute("aria-current", "true");
+      const sp = document.createElement("span"); sp.textContent = label; b.append(sp);
+      menu.append(b);
+    };
+    if (removing) for (const x of shared) item("Remove " + possessive(x.name) + " board", { remove: x.id });
+    else {
+      item("My todos", { board: "" }, !viewing);
+      for (const x of shared) item(sharedLabel(x), { board: x.id }, viewing === x);
+      item("Remove…", { removing: "1" });
+    }
+    placeMenu(btn);
+    menu.querySelector("button").focus();
+  }
+  function switcherClick(e) {
+    const b = e.target.closest("button[data-board], button[data-remove], button[data-removing]");
+    if (!b) return false;
+    const btn = menuBtn;
+    if (b.dataset.removing) { openSwitcher(btn, true); return true; }
+    closeMenu(true);
+    if (b.dataset.remove) removeShared(b.dataset.remove);
+    else if (b.dataset.board) view(b.dataset.board);
+    else viewMine();
+    return true;
+  }
+  $("switchBtn").addEventListener("click", e => {
+    if (!menu.hidden && menuBtn === e.currentTarget) { closeMenu(); return; }
+    openSwitcher(e.currentTarget, false);
+  });
+
+  // #share=<id>.<key> opens (and saves) a shared board; #shared=<id> reopens one you already have.
+  function openFromHash() {
+    const h = location.hash;
+    let m = /^#share=([\w-]{22})\.([\w-]{43})$/.exec(h);
+    if (m) {
+      let x = sharedById(m[1]);
+      if (!x) shared.push(x = { id: m[1], key: m[2], name: "", lastState: null, lastSeenAt: 0, version: 0, stopped: false, kept: false });
+      else if (x.key !== m[2]) Object.assign(x, { key: m[2], lastState: null, version: 0 });
+      saveShared();
+      view(x.id);
+      return;
+    }
+    if (h.startsWith("#share=")) { setHash(""); toast("That share link is incomplete. Ask for it again."); return; }
+    m = /^#shared=([\w-]{22})$/.exec(h);
+    if (m && sharedById(m[1])) view(m[1]);
+    else if (m) setHash("");
+  }
+  window.addEventListener("hashchange", openFromHash);
+  // Another tab of this browser opened, removed or updated a shared board, or changed your shares.
+  window.addEventListener("storage", e => {
+    if (e.key === SHARES_KEY) { shares = loadShares(); updateShareStatus(); return; }
+    if (e.key !== SHARED_KEY) return;
+    const id = viewing && viewing.id;
+    shared = loadShared();
+    if (id) {
+      const x = sharedById(id);
+      if (!x) { viewing = { id }; viewMine(); }
+      else { viewing = x; x.items = sharedItems(x.lastState); render(); renderBanner(); }
+    }
+    renderSwitcher();
+  });
+  function relayStarted() {
+    updateShareStatus();
+    if (viewing) connectView();
+    checkShares();
+  }
+  // On load: an authenticated read keeps each share from expiring (90 days unused) and finds any that did.
+  async function checkShares() {
+    for (const x of ownShares()) {
+      try { await relay.getState(x); }
+      catch (e) { if (e && (e.status === 404 || e.status === 401)) { dropShare(x); toast("A shared link expired, so it's no longer live"); } }
+    }
+    scheduleShares(true);
+  }
+
   // Hidden until config.js names a relay. tests/smoke.html swaps in a fake relay through this event.
   const relayBase = window.TodoStorage?.config.relayBase;
   if (relayBase && window.TodoRelay) startRelay(relayBase, {});
@@ -1313,7 +1863,12 @@
     applySessions(false); // an old snapshot may hold an older status
     save(); render();
   }
+  // On a shared board, undo and redo only reach your own copies (Add to mine): nothing else is on screen.
+  function undoBlocked(stack) {
+    return viewing && stack.length && stack[stack.length - 1].label !== COPY_LABEL && blocked();
+  }
   function undo() {
+    if (undoBlocked(past)) return;
     const step = past.pop();
     if (!step) { toast("Nothing to undo"); return; }
     future.push({ label: step.label, items: snap() });
@@ -1323,6 +1878,7 @@
     announce("Undid " + step.label);
   }
   function redo() {
+    if (undoBlocked(future)) return;
     const step = future.pop();
     if (!step) { toast("Nothing to redo"); return; }
     past.push({ label: step.label, items: snap() });
@@ -1345,7 +1901,7 @@
 
   // ---------- global keys ----------
   document.addEventListener("keydown", e => {
-    if ($("claudeDialog").open) return; // the dialog handles its own keys (Esc closes it)
+    if (document.querySelector("dialog[open]")) return; // a dialog handles its own keys (Esc closes it)
     const tag = (e.target.tagName || "").toLowerCase();
     const typing = tag === "input" || tag === "textarea";
     // Ctrl/⌘+Z undo, Ctrl/⌘+Shift+Z or Ctrl+Y redo — for every change, from anywhere.
@@ -1363,13 +1919,14 @@
       if (focusLane && !typing) { setFocus(focusLane); return; }
     }
     if (typing || e.defaultPrevented) return;
-    if (e.key === "/") { e.preventDefault(); input.focus(); return; }
+    if (e.key === "`" && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); toggleBoards(); return; }
+    if (e.key === "/") { e.preventDefault(); if (!blocked()) input.focus(); return; }
     if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.target.closest?.("li[data-id], li[data-session], .menu")) {
       const card = hoveredCard();
       if (card && trayAction(card, e.key, true)) { e.preventDefault(); return; }
       const li = hoveredRow();
       if (li && rowAction(li, e.key, true)) { e.preventDefault(); return; }
-      if ((e.key === "a" || e.key === "A") && !e.shiftKey && trayList().length) { e.preventDefault(); addSession(trayList()[0].id, "h"); return; }
+      if ((e.key === "a" || e.key === "A") && !e.shiftKey && !viewing && trayList().length) { e.preventDefault(); addSession(trayList()[0].id, "h"); return; }
       if ((e.key === "f" || e.key === "F") && ptr) {
         const lane = document.elementFromPoint(ptr.x, ptr.y)?.closest(".board .lane");
         if (lane) { e.preventDefault(); setFocus(lane.dataset.prio); }
@@ -1380,7 +1937,9 @@
   buildBoard();
   applyFocus();
   syncInput();
+  renderSwitcher();
+  openFromHash();
   render();
   renderTray();
-  input.focus();
+  if (!viewing) input.focus();
 })();

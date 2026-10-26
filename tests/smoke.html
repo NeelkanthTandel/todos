@@ -419,6 +419,326 @@
     const s1 = stored().find(t => t.id === "s1"), s2 = stored().find(t => t.id === "s2"), s3 = stored().find(t => t.id === "s3");
     check("normalize() keeps valid session links and drops bad ones", JSON.stringify(s1.session) === '{"id":"abc","state":"needs_you","project":"web","kind":"cloud","updatedAt":5}' &&
       !("session" in s2) && s3.session.state === "ended" && s3.session.project === "", JSON.stringify([s1, s2, s3]));
+
+    // ---------- live sharing: your side ----------
+    for (const k of Object.keys(localStorage)) if (k.startsWith("todos.")) localStorage.removeItem(k);
+    localStorage.setItem("todos.v1", JSON.stringify([
+      { id: "o1", text: "Ship it", done: false, prio: "h", created: 1 },
+      { id: "o2", text: "Shipped", done: true, prio: "h", created: 2, doneAt: 3 },
+      { id: "o3", text: "Review the plan", done: false, prio: "m", created: 4, wip: true, session: { id: "sess-x", state: "running", project: "secret-project", kind: "local", updatedAt: 1 } },
+      { id: "o4", text: "Some idea", done: false, prio: "n", created: 5 },
+    ]));
+    await load(); await sleep(100);
+    const SHARE_ID = "SSSSSSSSSSSSSSSSSSSSSS";
+    const shareCalls = [], puts = [];
+    const socks = [];
+    class ShareSocket {
+      constructor(url, protocols) { this.url = url; this.protocols = protocols; socks.push(this); setTimeout(() => this.onopen && this.onopen(), 0); }
+      send() {}
+      close() { this.closed = true; }
+    }
+    let stoppedIds = new Set();
+    async function shareFetch(url, init) {
+      const path = url.replace("https://relay.test", "");
+      shareCalls.push(init.method + " " + path + " " + (init.headers.Authorization || "") + " " + (init.body || ""));
+      if (init.method === "POST" && path === "/c") return new Response(JSON.stringify({ id: SHARE_ID, kind: "share", ownerToken: "share-owner" }), { status: 201 });
+      if (init.method === "PUT" && path.endsWith("/state")) {
+        if (init.headers.Authorization !== "Bearer share-owner") return new Response('{"error":"no"}', { status: 401 });
+        puts.push(JSON.parse(init.body).data);
+        return new Response(JSON.stringify({ version: puts.length }), { status: 200 });
+      }
+      if (init.method === "DELETE" && path === "/c/" + SHARE_ID) return new Response(null, { status: 204 });
+      if (init.method === "GET") {
+        const id = path.split("/")[2];
+        if (stoppedIds.has(id)) return new Response('{"error":"no such channel"}', { status: 404 });
+        return new Response(JSON.stringify({ kind: "share", version: 1, data: null }));
+      }
+      return new Response('{"error":"nope"}', { status: 400 });
+    }
+    const seam = () => win().dispatchEvent(new (win().CustomEvent)("todos:relay-seam", { detail: { base: "https://relay.test", fetch: shareFetch, WebSocket: ShareSocket } }));
+    // Waits on the app's events, not timers: virtual time can skip a timeout while real crypto work runs.
+    const pushed = () => new Promise(r => win().addEventListener("todos:sharepush", r, { once: true }));
+    check("Share live link is hidden without a relay", (() => {
+      $("exportBtn").click();
+      const has = !!doc().querySelector('#menu [data-export="share"]');
+      doc().body.dispatchEvent(new (win().KeyboardEvent)("keydown", { key: "Escape", bubbles: true }));
+      return !has;
+    })());
+    seam();
+    check("no 'Sharing live' before anything is shared", !shown($("shareStatus")));
+    $("exportBtn").click();
+    check("Export menu offers Share live link…, but no Shared links yet", !!doc().querySelector('#menu [data-export="share"]') && !doc().querySelector('#menu [data-export="shares"]'));
+    doc().querySelector('#menu [data-export="share"]').click();
+    check("the share dialog asks for a name and what to include, with the warning", $("shareDialog").open && $("shareOpen").checked && !$("shareDone").checked &&
+      [...doc().querySelectorAll("#shareDialog input[data-lane]")].every(b => b.checked) &&
+      $("shareDialog").textContent.includes("Anyone with this link can see these todos, and updates appear for them as you make changes."));
+    $("shareName").value = "Priya";
+    let firstPush = pushed();
+    $("shareCreate").click();
+    await waitFor(() => !$("shareLinkBox").hidden);
+    await firstPush;
+    const shares = JSON.parse(localStorage.getItem("todos.shares") || "[]");
+    const link = $("shareLink").textContent;
+    check("Create link makes a share channel and shows #share=<id>.<key>", shares.length === 1 && shares[0].id === SHARE_ID && shares[0].ownerToken === "share-owner" &&
+      shares[0].name === "Priya" && link.endsWith("#share=" + SHARE_ID + "." + shares[0].key) && shareCalls[0].startsWith("POST /c ") &&
+      localStorage.getItem("todos.shareName") === "Priya", link);
+    check("the key never reaches the relay", !shareCalls.join("\n").includes(shares[0].key));
+    const snap1 = await win().TodoRelay.decrypt(shares[0].key, puts[0], 1e6);
+    check("the snapshot holds the included todos only: no done ones, ids, timestamps or sessions", JSON.stringify(snap1.lanes) ===
+      JSON.stringify([[{ t: "Ship it" }], [{ t: "Review the plan", w: 1 }], [], [{ t: "Some idea" }]]) && snap1.v === 1 && snap1.name === "Priya" &&
+      typeof snap1.at === "number" && !puts[0].includes("secret") && !JSON.stringify(snap1).includes("secret-project"), JSON.stringify(snap1));
+    $("shareClose").click();
+    check("the footer says 'Sharing live'", shown($("shareStatus")) && $("shareStatus").textContent === "Sharing live");
+
+    // Edits are pushed after about a second, debounced into one write.
+    let next = pushed();
+    type("Water the plants");
+    type("Call the bank");
+    await next;
+    const snap2 = await win().TodoRelay.decrypt(shares[0].key, puts.at(-1), 1e6);
+    check("edits are pushed live, debounced into one write", puts.length === 2 && snap2.lanes[3].map(x => x.t).join("|") === "Some idea|Water the plants|Call the bank", puts.length + " " + JSON.stringify(snap2.lanes) + " rows " + JSON.stringify(["h","m","l","n"].map(rows)));
+    next = pushed();
+    doc().querySelector("#list-h li[data-id] .check").click();
+    await next;
+    check("ticking a todo done takes it off the shared board", (await win().TodoRelay.decrypt(shares[0].key, puts.at(-1), 1e6)).lanes[0].length === 0);
+    next = pushed();
+    key(doc().body, "z", { ctrlKey: true });
+    await next;
+
+    // Shared links: change what's included, then stop sharing.
+    $("shareStatus").click();
+    check("Shared links lists the share with its actions", $("sharesDialog").open && $("sharesList").textContent.includes("Priya's todos") &&
+      ["copy", "edit", "stop"].every(a => $("sharesList").querySelector('[data-sact="' + a + '"]')));
+    $("sharesList").querySelector('[data-sact="edit"]').click();
+    check("Change what's included reopens the dialog with the link", $("shareDialog").open && !$("sharesDialog").open && $("shareLink").textContent === link && $("shareCreate").textContent === "Save");
+    $("shareDone").checked = true;
+    doc().querySelector('#shareDialog input[data-lane="n"]').checked = false;
+    next = pushed();
+    $("shareCreate").click();
+    await next;
+    const snap3 = await win().TodoRelay.decrypt(shares[0].key, puts.at(-1), 1e6);
+    check("the snapshot follows the include options", JSON.stringify(snap3.lanes[0]) === JSON.stringify([{ t: "Ship it" }, { t: "Shipped", d: 1 }]) && snap3.lanes[3].length === 0, JSON.stringify(snap3.lanes));
+    $("shareStatus").click();
+    const stopBtn = $("sharesList").querySelector('[data-sact="stop"]');
+    stopBtn.click();
+    check("Stop sharing asks to confirm", stopBtn.textContent === "Click again to stop" && JSON.parse(localStorage.getItem("todos.shares")).length === 1);
+    stopBtn.click();
+    await waitFor(() => !shown($("shareStatus")));
+    check("Stop sharing deletes the channel", shareCalls.some(c => c.startsWith("DELETE /c/" + SHARE_ID + " Bearer share-owner")) &&
+      JSON.parse(localStorage.getItem("todos.shares")).length === 0 && !shown($("shareStatus")));
+    $("sharesClose").click();
+
+    // On load, each share is read once with the owner token (which keeps it from expiring); expired ones are dropped.
+    const EXPIRED = "EEEEEEEEEEEEEEEEEEEEEE";
+    const mkShare = id => ({ id, key: win().TodoRelay.newKey(), ownerToken: "share-owner", relay: "https://relay.test", name: "Priya", options: {}, createdAt: 1 });
+    localStorage.setItem("todos.shares", JSON.stringify([mkShare(SHARE_ID), mkShare(EXPIRED)]));
+    stoppedIds = new Set([EXPIRED]);
+    await load(); await sleep(50);
+    shareCalls.length = 0;
+    next = pushed();
+    seam();
+    await next;
+    check("on load, shares are kept alive and expired ones dropped", shareCalls.some(c => c.startsWith("GET /c/" + SHARE_ID + " Bearer share-owner")) &&
+      JSON.parse(localStorage.getItem("todos.shares")).map(x => x.id).join() === SHARE_ID && $("toastMsg").textContent.includes("expired"), JSON.stringify(shareCalls));
+    stoppedIds = new Set();
+
+    // ---------- live sharing: viewing someone else's board ----------
+    for (const k of Object.keys(localStorage)) if (k.startsWith("todos.")) localStorage.removeItem(k);
+    const OWN = [
+      { id: "m1", text: "My own todo", done: false, prio: "h", created: 1 },
+      { id: "m2", text: "My done todo", done: true, prio: "l", created: 2, doneAt: 3 },
+    ];
+    localStorage.setItem("todos.v1", JSON.stringify(OWN));
+    const ownBefore = localStorage.getItem("todos.v1");
+    const VIEW_ID = "VVVVVVVVVVVVVVVVVVVVVV";
+    const VKEY = win().TodoRelay.newKey();
+    socks.length = 0; shareCalls.length = 0;
+    await new Promise(resolve => { frame.onload = resolve; frame.src = "../public/index.html?" + Date.now() + "#share=" + VIEW_ID + "." + VKEY; });
+    await sleep(100);
+    check("opening a link strips the key from the address bar", win().location.hash === "#shared=" + VIEW_ID && !win().location.href.includes(VKEY), win().location.href);
+    const savedShared = JSON.parse(localStorage.getItem("todos.shared") || "[]");
+    check("the shared board is saved under todos.shared, not todos.v1", savedShared.length === 1 && savedShared[0].id === VIEW_ID && savedShared[0].key === VKEY &&
+      localStorage.getItem("todos.v1") === ownBefore);
+    check("before any update it shows the offline state", shown($("viewBar")) && $("viewText").textContent.includes("Offline") && rows("h").length === 0);
+    seam();
+    await waitFor(() => socks.length && $("viewBar").dataset.status === "live");
+    const vsock = socks.find(s => s.url === "wss://relay.test/c/" + VIEW_ID);
+    check("follows the share over a WebSocket without any token", vsock && vsock.protocols.join() === "todos", vsock && vsock.protocols.join());
+    async function deliverState(data, version) {
+      const handled = new Promise(r => win().addEventListener("todos:sharemsg", r, { once: true }));
+      vsock.onmessage({ data: JSON.stringify({ type: "state", version, data }) });
+      await handled;
+    }
+    const board1 = { v: 1, name: "Priya", at: Date.now() - 120000, lanes: [[{ t: "Ship it" }, { t: "Fix the bug", w: 1 }], [{ t: "Review" }], [], [{ t: "Old idea" }, { t: "Done thing", d: 1 }]] };
+    await deliverState(await win().TodoRelay.encrypt(VKEY, board1), 1);
+    check("the shared board renders", rows("h").join("|") === "Ship it|Fix the bug" && rows("m").join() === "Review" && rows("n").join() === "Old idea" &&
+      $("doneN").textContent === "1" && $("summary").textContent === "4 open", JSON.stringify([rows("h"), rows("n")]));
+    check("a non-dismissable banner says whose board it is, live and read-only", shown($("viewBar")) && /^Viewing Priya's todos · live · updated \d min ago · read-only$/.test($("viewText").textContent) &&
+      $("viewText").querySelector("b").textContent === "Priya's" && !$("viewBar").querySelector("[aria-label*='lose' i], .close"), $("viewText").textContent);
+    check("…with Back to my todos and Copy to mine", shown($("viewBack")) && shown($("viewCopy")) && !shown($("viewRemove")) && !shown($("viewKeep")));
+    check("the tab title says it's shared", doc().title === "Priya's todos (shared)", doc().title);
+    const tint = getComputedStyle(doc().body).boxShadow;
+    check("a tinted frame goes round the board", doc().documentElement.classList.contains("viewing") && tint.includes("inset"), tint);
+    check("the heading becomes a switcher", shown($("switchBtn")) && !shown($("boardTitle")) && $("switchName").textContent === "Priya's todos");
+
+    // Read-only: every write path is blocked.
+    const RO = "Read-only: this is Priya's list";
+    const sharedRows = () => JSON.stringify(["h", "m", "l", "n"].map(rows));
+    const shownBefore = sharedRows();
+    const untouched = () => localStorage.getItem("todos.v1") === ownBefore && sharedRows() === shownBefore;
+    check("composer, Import, Clear all and the tray are gone", !shown($("addForm")) && $("addForm").inert && !shown($("importBtn")) && !shown($("tray")));
+    check("rows have no grips, checkboxes, edit, move or delete; only Add to mine", doc().querySelectorAll(".board li[draggable='true'], .board .grip").length === 0 &&
+      doc().querySelectorAll(".board li [data-act]:not([data-act='copy']), .board li button.check, .board li button.text").length === 0 &&
+      doc().querySelectorAll(".board li [data-act='copy']").length === 4);
+    for (const el of doc().querySelectorAll(".board li .check, .board li .text, .board li .chip")) el.click();
+    check("clicking a row changes nothing", untouched());
+    const firstRow = doc().querySelector("#list-h li[data-id]");
+    const copyBtn = firstRow.querySelector("[data-act='copy']");
+    let allBlocked = true;
+    for (const k of ["x", "X", "s", "e", "E", "1", "2", "3", "4", "Delete", "Backspace"]) {
+      $("toastMsg").textContent = "";
+      copyBtn.focus(); key(copyBtn, k);
+      if ($("toastMsg").textContent !== RO || !untouched() || doc().querySelector(".board input.edit")) { allBlocked = false; break; }
+    }
+    check("every row shortcut is blocked with a read-only toast", allBlocked && untouched(), $("toastMsg").textContent);
+    // Hovered-row shortcuts (the composer-empty, mouse-over-a-todo path).
+    const r = firstRow.getBoundingClientRect();
+    doc().dispatchEvent(new (win().PointerEvent)("pointermove", { clientX: r.left + 20, clientY: r.top + r.height / 2, pointerType: "mouse", bubbles: true }));
+    $("toastMsg").textContent = "";
+    doc().activeElement.blur();
+    key(doc().body, "x");
+    check("shortcuts on a hovered row are blocked too", $("toastMsg").textContent === RO && untouched());
+    $("toastMsg").textContent = "";
+    key(doc().body, "/");
+    check("/ doesn't open the composer", $("toastMsg").textContent === RO && doc().activeElement !== $("new"));
+    const ds = new (win().DragEvent)("dragstart", { bubbles: true, cancelable: true, dataTransfer: new (win().DataTransfer)() });
+    firstRow.dispatchEvent(ds);
+    const dz = doc().querySelector("#list-m");
+    dz.dispatchEvent(new (win().DragEvent)("dragover", { bubbles: true, cancelable: true, dataTransfer: new (win().DataTransfer)() }));
+    dz.dispatchEvent(new (win().DragEvent)("drop", { bubbles: true, cancelable: true, dataTransfer: new (win().DataTransfer)() }));
+    check("drag and drop is blocked", ds.defaultPrevented && untouched());
+    $("new").value = "sneaky"; $("new").dispatchEvent(new (win().Event)("input"));
+    $("addForm").requestSubmit();
+    $("new").value = ""; $("new").dispatchEvent(new (win().Event)("input"));
+    check("the composer can't add, even when submitted directly", untouched());
+    $("toastMsg").textContent = "";
+    await importFile(JSON.stringify({ items: [{ id: "imp9", text: "imported", done: false, prio: "h", created: 1 }] }));
+    check("Import is blocked", $("toastMsg").textContent === RO && untouched(), $("toastMsg").textContent);
+    $("doneBtn").click(); await sleep(60);
+    check("the Done panel shows their done todos, without Clear all", doc().querySelector("#panelBody .text").textContent === "Done thing" && !shown($("clearDone")));
+    $("clearDone").click(); $("clearDone").click();
+    check("Clear all is blocked", untouched() && $("doneN").textContent === "1");
+    key(doc().body, "Escape");
+    if (chromium) {
+      localStorage.setItem("todos.clip", "on");
+      win().navigator.clipboard.readText = async () => "Something copied";
+      let done = false;
+      win().addEventListener("todos:clipcheck", () => { done = true; }, { once: true });
+      win().dispatchEvent(new (win().Event)("focus"));
+      await waitFor(() => done);
+      $("new").dispatchEvent(new (win().Event)("paste"));
+      check("clipboard suggestions are blocked", $("new").value === "" && !shown($("clipOffer")) && untouched());
+      localStorage.removeItem("todos.clip");
+    } else check("clipboard suggestions (Chromium only, skipped)", true);
+    $("toastMsg").textContent = "";
+    key(doc().body, "z", { ctrlKey: true });
+    check("undo has nothing of theirs to change", untouched());
+    $("exportBtn").click();
+    const exportKinds = [...doc().querySelectorAll("#menu [data-export]")].map(b => b.dataset.export).join();
+    key(doc().querySelector("#menu button"), "Escape");
+    check("Export offers text only (no backup or sharing of their board)", exportKinds === "copy,txt", exportKinds);
+    const viewTxt = await exportVia("txt");
+    check("Export as text exports the board you're viewing", viewTxt && viewTxt.text.startsWith("p1\n\n1. Ship it\n2. Fix the bug"), viewTxt && viewTxt.text);
+    const expand = doc().querySelector('.expand[data-lane="m"]');
+    expand.click();
+    check("expanding a lane still works", doc().querySelector('.lane[data-prio="m"]').classList.contains("focus"));
+    expand.click();
+    check("your own todos.v1 is untouched after all of that", localStorage.getItem("todos.v1") === ownBefore);
+
+    // The one write allowed: copying into your own list.
+    doc().querySelector("#list-m [data-act='copy']").click();
+    let own = stored();
+    check("Add to mine copies into your Fridge with a new id", own.length === 3 && own[2].text === "Review" && own[2].prio === "n" && !own[2].done &&
+      !["m1", "m2"].includes(own[2].id) && $("toastMsg").textContent === "Added to your Fridge" && sharedRows() === shownBefore);
+    $("undo").click();
+    check("…and Undo takes it back out", localStorage.getItem("todos.v1") === ownBefore);
+    $("viewCopy").click();
+    own = stored();
+    check("Copy to mine copies every open todo", own.map(t => t.text).slice(2).join("|") === "Ship it|Fix the bug|Review|Old idea" && own.slice(2).every(t => t.prio === "n" && !t.done && !t.wip), JSON.stringify(own));
+    key(doc().body, "z", { ctrlKey: true });
+    check("Ctrl+Z undoes the copy", localStorage.getItem("todos.v1") === ownBefore);
+    const hoverCopy = firstRow.isConnected ? firstRow : doc().querySelector("#list-h li[data-id]");
+    hoverCopy.querySelector("[data-act='copy']").focus();
+    key(hoverCopy.querySelector("[data-act='copy']"), "c");
+    check("C adds the focused todo to yours", stored().length === 3 && stored()[2].text === "Ship it");
+    $("undo").click();
+
+    // Live updates re-render; late, malformed or foreign states are ignored.
+    const board2 = { v: 1, name: "Priya", at: Date.now(), lanes: [[{ t: "Ship it" }], [{ t: "Review" }, { t: "New thing" }], [], [{ t: '<img src=x onerror="parent.__xss3=1">' }]] };
+    await deliverState(await win().TodoRelay.encrypt(VKEY, board2), 2);
+    check("a state update re-renders the board", rows("m").join("|") === "Review|New thing" && rows("h").join() === "Ship it" && $("viewText").textContent.includes("updated just now"));
+    check("shared text with markup renders as text", rows("n")[0].startsWith("<img") && !doc().querySelector(".board img") && !window.__xss3);
+    await deliverState(await win().TodoRelay.encrypt(VKEY, board1), 1);
+    check("an older state arriving late is ignored", rows("m").join("|") === "Review|New thing");
+    const before2 = sharedRows();
+    await deliverState(await win().TodoRelay.encrypt(VKEY, { v: 2, name: "Priya", lanes: [[], [], [], []] }), 3);
+    await deliverState(await win().TodoRelay.encrypt(VKEY, { v: 1, name: "Priya", lanes: [[{ t: "x" }]] }), 4);
+    await deliverState(await win().TodoRelay.encrypt(VKEY, ["not", "a", "board"]), 5);
+    await deliverState(await win().TodoRelay.encrypt(win().TodoRelay.newKey(), board1), 6);
+    await deliverState("not base64!", 7);
+    check("a malformed or foreign state is ignored", sharedRows() === before2 && localStorage.getItem("todos.v1") === ownBefore);
+
+    // Switching: the backtick, and the switcher in the heading.
+    key(doc().body, "`");
+    check("` switches back to your own board, exactly as it was", rows("h").join() === "My own todo" && !shown($("viewBar")) && shown($("addForm")) && !$("addForm").inert &&
+      !doc().documentElement.classList.contains("viewing") && doc().title === "Todos" && win().location.hash === "" && $("switchName").textContent === "Todos");
+    type("Mine again");
+    check("…where you can edit as usual", stored().some(t => t.text === "Mine again"));
+    key(doc().body, "`");
+    check("` goes back to the shared board", shown($("viewBar")) && rows("m").join("|") === "Review|New thing" && win().location.hash === "#shared=" + VIEW_ID);
+    $("toastMsg").textContent = "";
+    key(doc().body, "z", { ctrlKey: true });
+    check("Ctrl+Z on a shared board won't undo your own edits out of sight", $("toastMsg").textContent === RO && stored().some(t => t.text === "Mine again"));
+    $("switchBtn").click();
+    const switchItems = [...doc().querySelectorAll("#menu button")].map(b => b.textContent);
+    check("the switcher lists My todos, the shared board, and Remove…", switchItems.join("|") === "My todos|Priya's · live|Remove…", switchItems.join("|"));
+    doc().querySelector('#menu [data-board=""]').click();
+    check("…and switches boards", !shown($("viewBar")) && rows("h").join() === "My own todo");
+    $("switchBtn").click();
+    doc().querySelector('#menu [data-board="' + VIEW_ID + '"]').click();
+    check("…both ways", shown($("viewBar")));
+
+    // Offline, then stopped sharing.
+    const live = socks.at(-1), opened = socks.length; // switching boards opened a new socket
+    live.onclose({ code: 1006 });
+    await waitFor(() => $("viewBar").dataset.status === "offline");
+    check("a dropped connection shows the cached copy as offline", $("viewText").textContent.startsWith("Viewing Priya's todos · Offline · last updated") && rows("m").join("|") === "Review|New thing", $("viewText").textContent);
+    await waitFor(() => socks.length > opened, 2000); // it reconnects
+    const vsock2 = socks.at(-1);
+    vsock2.onmessage({ data: JSON.stringify({ type: "deleted" }) });
+    await waitFor(() => $("viewBar").dataset.status === "stopped");
+    check("'Priya stopped sharing' with Remove and Keep last copy", $("viewText").textContent.startsWith("Priya stopped sharing") && shown($("viewRemove")) && shown($("viewKeep")) &&
+      rows("m").join("|") === "Review|New thing", $("viewText").textContent);
+    $("viewKeep").click();
+    check("Keep last copy keeps it, read-only", $("viewText").textContent.startsWith("Viewing Priya's todos · last copy") && !shown($("viewKeep")) && JSON.parse(localStorage.getItem("todos.shared"))[0].kept === true);
+    await load(); await sleep(100);
+    check("without the link in the address bar, your own board opens", !shown($("viewBar")) && rows("h").join() === "My own todo" && shown($("switchBtn")));
+    $("switchBtn").click();
+    doc().querySelector("#menu [data-removing]").click();
+    doc().querySelector('#menu [data-remove="' + VIEW_ID + '"]').click();
+    check("Remove… forgets a shared board", JSON.parse(localStorage.getItem("todos.shared")).length === 0 && !shown($("switchBtn")) && shown($("boardTitle")));
+
+    // A link to a board that's already gone: a 404 on reconnect means it stopped.
+    socks.length = 0; stoppedIds = new Set(["GGGGGGGGGGGGGGGGGGGGGG"]);
+    await new Promise(resolve => { frame.onload = resolve; frame.src = "../public/index.html?" + Date.now() + "#share=GGGGGGGGGGGGGGGGGGGGGG." + VKEY; });
+    await sleep(50);
+    seam();
+    await waitFor(() => socks.length);
+    socks[0].onclose({ code: 1006 });
+    await waitFor(() => $("viewBar").dataset.status === "stopped");
+    check("a channel that's gone (404) shows 'stopped sharing'", $("viewText").textContent.startsWith("The owner stopped sharing"), $("viewText").textContent);
+    $("viewRemove").click();
+    check("Remove goes back to your own board", !shown($("viewBar")) && JSON.parse(localStorage.getItem("todos.shared")).length === 0 && localStorage.getItem("todos.v1").includes("Mine again"));
   } catch (e) {
     check("no exceptions", false, e && e.stack || String(e));
   }

@@ -5,7 +5,7 @@ Three features, built **one at a time, in this order**. Each depends on the one 
 | # | Milestone | Plan | Status |
 | --- | --- | --- | --- |
 | 1 | Encrypted relay + Claude Code session suggestions | [01-relay-and-claude-suggestions.md](01-relay-and-claude-suggestions.md) | In review (1a, 1b and 1c in one PR) |
-| 2 | Live sharing (read-only for viewers) | [02-live-sharing.md](02-live-sharing.md) | Not started |
+| 2 | Live sharing (read-only for viewers) | [02-live-sharing.md](02-live-sharing.md) | In review |
 | 3 | Syncing your own list across devices | [03-device-sync.md](03-device-sync.md) | Not started |
 
 Update the **Status** column in the PR that finishes a milestone (or a step of one).

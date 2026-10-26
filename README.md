@@ -24,8 +24,9 @@
 - **Export as plain text** to paste anywhere (copy or `.txt`), or **export and import** a JSON backup to move between browsers or devices.
 - **Clipboard suggestions** (Chrome, Edge, Brave; off until you turn them on). Copy something, come back to Todos, and it's waiting in the box, selected: `Enter` adds it; `Backspace`, `Esc` or typing dismisses it; `Tab` keeps it to edit. Anything that looks like a password, API key, token, database URL with credentials, one-time code or card number is never suggested, and copies older than 10 minutes are ignored. Turn it on or off from the footer.
 - **Claude Code sessions as suggestions** (optional). Connect Claude Code and each new session shows up above the board; one key adds it, and the todo follows the session's status. End-to-end encrypted. See [Claude Code integration](#claude-code-integration).
+- **Live sharing** (optional, read-only for the people you share with). **Export → Share live link…** makes a link to some or all of your board; whoever opens it sees your changes within a second, and can't change a thing. See [Sharing your board](#sharing-your-board).
 - **Light and dark**, following your system. Works on phones.
-- **Private.** No accounts, analytics, trackers or third-party requests. It's a static page; your list never leaves your browser. (The optional Claude Code integration goes through this project's own relay, encrypted end to end.)
+- **Private.** No accounts, analytics, trackers or third-party requests. It's a static page; your list never leaves your browser. (The optional Claude Code integration and live sharing go through this project's own relay, encrypted end to end.)
 
 ## Keyboard shortcuts
 
@@ -42,6 +43,8 @@
 | `F` | Expand the lane under the mouse (`Esc` to go back) |
 | `↑` `↓` `←` `→` | Move between todos and lanes |
 | `Ctrl/⌘+Z`, `Ctrl/⌘+Shift+Z` | Undo, redo |
+| `` ` `` | Switch between your board and the last shared board you viewed |
+| `C` | On a shared board: add the focused or hovered todo to your own list |
 
 On a Claude session suggestion (focused or under the mouse): `Enter` or `1` adds it to Boiling over, `2`–`4` to another lane, `E` edits the title first, `Esc` or `Delete` dismisses it. `A` adds the newest suggestion from anywhere on the board.
 
@@ -67,6 +70,16 @@ The same dialog lists connected machines, each with a **Disconnect** button. `/t
 **Using a suggestion:** `Enter` (or the **Add** button) adds it to Boiling over, `2`–`4` to another lane, `E` lets you edit the title first, `Esc` dismisses it, and `A` adds the newest one from anywhere on the board. `Ctrl/⌘+Z` undoes an add. Click a linked todo's status badge to copy `claude --resume <id>`. Suggestions from sessions that ended a day ago without being added disappear on their own.
 
 More detail: [`claude-plugin/README.md`](claude-plugin/README.md).
+
+## Sharing your board
+
+Share a live, **read-only** view of your todos through a link. It needs the relay (`relayBase` in `public/config.js`), like the Claude Code integration.
+
+**Sharing:** **Export → Share live link…** asks for your name (shown as "Priya's todos") and what to include: open todos (on by default), done todos (off by default), and which lanes. **Create link** gives you a `…/#share=<id>.<key>` link to send. Anyone with the link can see those todos, and every change you make reaches them about a second later. While anything is shared, the footer says **Sharing live**; click it (or **Export → Shared links**) to copy a link again, change what it includes, or **Stop sharing**, which deletes it from the relay at once. You can have several links (say, one for work and one for home).
+
+**Viewing:** opening a link shows that board in a violet frame, with a banner that can't be closed: *Viewing Priya's todos · live · updated 2 min ago · read-only*. Nothing on it can be changed by any click, key, drag, paste or import. The only thing you can do is copy todos into **your own** Fridge: **Add to mine** (the `+` on a todo, or `C`) or **Copy to mine** in the banner, both undoable. **Back to my todos**, the `` ` `` key, or the switcher in the heading takes you back to your own list, which a shared board never touches. If the connection drops you keep the last copy (*Offline · last updated 3 h ago*); if the owner stops sharing you can **Remove** it or **Keep last copy**.
+
+The link holds the board's encryption key after the `#`, which browsers never send to a server, and Todos takes it out of the address bar as soon as the page opens. The relay only ever sees ciphertext.
 
 ## Where your todos are stored
 
@@ -126,7 +139,7 @@ Give it its own domain or subdomain if you can. Every project page under `you.gi
 
 ## Running your own relay
 
-The Claude Code integration needs the relay in [`relay/`](relay/README.md), a Cloudflare Worker that fits the free plan. `.github/workflows/relay.yml` deploys it from `main` once the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repo secrets are set. Then set `relayBase` in `public/config.js` to its address and add its `https://` and `wss://` origins to `connect-src` in `public/index.html`. With `relayBase` empty, the integration stays hidden.
+The Claude Code integration and live sharing need the relay in [`relay/`](relay/README.md), a Cloudflare Worker that fits the free plan. `.github/workflows/relay.yml` deploys it from `main` once the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repo secrets are set. Then set `relayBase` in `public/config.js` to its address and add its `https://` and `wss://` origins to `connect-src` in `public/index.html`. With `relayBase` empty, both stay hidden.
 
 ## Moving to a database later
 
