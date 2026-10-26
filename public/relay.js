@@ -2,7 +2,8 @@
 // and the end-to-end encryption every message goes through. The relay only ever sees ciphertext; keys stay in
 // this browser. Format: data = base64url(iv ‖ AES-256-GCM(deflate-raw(JSON))), shared with the Claude Code plugin.
 (() => {
-  const MAX_PLAIN = 64 * 1024; // a decrypted message never needs more; guards against a decompression bomb
+  const MAX_PLAIN = 64 * 1024;      // default cap on decrypted size: guards against a decompression bomb
+  const MAX_FRAME = 512 * 1024;     // a WebSocket frame: the relay's largest is a 256 KB state
 
   function toB64u(bytes) {
     let s = "";
@@ -32,7 +33,7 @@
     return out;
   }
   const deflate = bytes => readAll(new Blob([bytes]).stream().pipeThrough(new CompressionStream("deflate-raw")), Infinity);
-  const inflate = bytes => readAll(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw")), MAX_PLAIN);
+  const inflate = (bytes, max) => readAll(new Blob([bytes]).stream().pipeThrough(new DecompressionStream("deflate-raw")), max);
   const importKey = (b64, use) => crypto.subtle.importKey("raw", fromB64u(b64), "AES-GCM", false, [use]);
 
   async function encrypt(keyB64, obj, iv = random(12)) {
@@ -43,11 +44,11 @@
     return toB64u(out);
   }
   // Throws on anything that isn't ours: wrong key, tampered or truncated data, oversized or invalid JSON.
-  async function decrypt(keyB64, data) {
+  async function decrypt(keyB64, data, max = MAX_PLAIN) {
     const bytes = fromB64u(data);
     if (bytes.length < 29) throw new Error("too short");
     const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: bytes.slice(0, 12) }, await importKey(keyB64, "decrypt"), bytes.slice(12));
-    return JSON.parse(new TextDecoder().decode(await inflate(new Uint8Array(plain))));
+    return JSON.parse(new TextDecoder().decode(await inflate(new Uint8Array(plain), max)));
   }
 
   // Pairing code for /todos:connect: base64url(1 ‖ channel id (16 bytes) ‖ key (32) ‖ writer token (32) ‖ relay URL).
@@ -96,7 +97,7 @@
             ping = setInterval(() => { try { sock.send("ping"); } catch {} }, 45000); // keeps proxies from dropping it
           };
           sock.onmessage = e => {
-            if (typeof e.data !== "string" || e.data.length > 64 * 1024) return;
+            if (typeof e.data !== "string" || e.data.length > MAX_FRAME) return;
             let msg;
             try { msg = JSON.parse(e.data); } catch { return; } // "pong" and anything else that isn't JSON
             if (msg && typeof msg === "object") onEvent(msg);
