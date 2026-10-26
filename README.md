@@ -23,8 +23,9 @@
 - **Keyboard first.** Shortcuts work on the focused todo, or on the one under your mouse.
 - **Export as plain text** to paste anywhere (copy or `.txt`), or **export and import** a JSON backup to move between browsers or devices.
 - **Clipboard suggestions** (Chrome, Edge, Brave; off until you turn them on). Copy something, come back to Todos, and it's waiting in the box, selected: `Enter` adds it; `Backspace`, `Esc` or typing dismisses it; `Tab` keeps it to edit. Anything that looks like a password, API key, token, database URL with credentials, one-time code or card number is never suggested, and copies older than 10 minutes are ignored. Turn it on or off from the footer.
+- **Claude Code sessions as suggestions** (optional). Connect Claude Code and each new session shows up above the board; one key adds it, and the todo follows the session's status. End-to-end encrypted. See [Claude Code integration](#claude-code-integration).
 - **Light and dark**, following your system. Works on phones.
-- **Private.** No accounts, analytics, trackers or third-party requests. It's a static page; your list never leaves your browser.
+- **Private.** No accounts, analytics, trackers or third-party requests. It's a static page; your list never leaves your browser. (The optional Claude Code integration goes through this project's own relay, encrypted end to end.)
 
 ## Keyboard shortcuts
 
@@ -41,6 +42,31 @@
 | `F` | Expand the lane under the mouse (`Esc` to go back) |
 | `↑` `↓` `←` `→` | Move between todos and lanes |
 | `Ctrl/⌘+Z`, `Ctrl/⌘+Shift+Z` | Undo, redo |
+
+On a Claude session suggestion (focused or under the mouse): `Enter` or `1` adds it to Boiling over, `2`–`4` to another lane, `E` edits the title first, `Esc` or `Delete` dismisses it. `A` adds the newest suggestion from anywhere on the board.
+
+## Claude Code integration
+
+Run many Claude Code sessions at once? Each new one can show up on your board as a suggestion, waiting in a **Claude sessions** strip above the lanes. It isn't added until you say so. Once added, the todo shows the session's live status: **running**, **needs you** (waiting on a permission or question), **your turn** (finished its reply) or **ended**, and the tab title counts sessions that need you, like "(2) Todos". This works for Claude Code in the terminal, the desktop app and cloud sessions.
+
+**Set it up** (once per machine):
+
+1. Install the plugin in Claude Code (needs Node 18+):
+   ```
+   /plugin marketplace add NeelkanthTandel/todos
+   /plugin install todos@todos
+   ```
+2. On the board, click **Connect Claude Code** in the footer and run the `/todos:connect …` command it shows in Claude Code on that machine.
+
+The same dialog lists connected machines, each with a **Disconnect** button. `/todos:disconnect` forgets the connection on a machine. For cloud sessions, which start from a fresh container, set `TODOS_CONNECTION=<code>` in the environment's variables instead.
+
+**What's sent:** for each session, its first prompt's first line as a title (with Markdown and code removed, and nothing at all if it looks like a key, token or password), the project's folder name, and its status changes. Never your code, files, full prompts or paths. Everything is encrypted on your machine with a key that only your board and your connected machines have; the relay in between ([`relay/`](relay/README.md)) stores ciphertext only, and the board deletes each message once it has read it.
+
+**Opt out** per project with a `.todos-ignore` file in its root, or everywhere with `TODOS_DISABLE=1`.
+
+**Using a suggestion:** `Enter` (or the **Add** button) adds it to Boiling over, `2`–`4` to another lane, `E` lets you edit the title first, `Esc` dismisses it, and `A` adds the newest one from anywhere on the board. `Ctrl/⌘+Z` undoes an add. Click a linked todo's status badge to copy `claude --resume <id>`. Suggestions from sessions that ended a day ago without being added disappear on their own.
+
+More detail: [`claude-plugin/README.md`](claude-plugin/README.md).
 
 ## Where your todos are stored
 
@@ -97,6 +123,10 @@ Then open http://localhost:8080.
 On GitHub Pages, `.github/workflows/pages.yml` already publishes `public/` whenever it changes on `main`. In a fork, set **Settings → Pages → Source** to **GitHub Actions**.
 
 Give it its own domain or subdomain if you can. Every project page under `you.github.io` shares one `localStorage`, so another page there could read your todos. Keys are prefixed with `namespace` from `public/config.js` to avoid collisions, but that doesn't keep the data private.
+
+## Running your own relay
+
+The Claude Code integration needs the relay in [`relay/`](relay/README.md), a Cloudflare Worker that fits the free plan. `.github/workflows/relay.yml` deploys it from `main` once the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repo secrets are set. Then set `relayBase` in `public/config.js` to its address and add its `https://` and `wss://` origins to `connect-src` in `public/index.html`. With `relayBase` empty, the integration stays hidden.
 
 ## Moving to a database later
 

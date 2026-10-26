@@ -169,7 +169,18 @@ claude-plugin/
 
 **Done when:** start a real Claude Code session → within a few seconds the suggestion appears on https://todos.always17.com → Enter adds it to P1 → the badge follows the session through needs you / your turn / ended.
 
+## Decisions made while building
+
+- **One PR for 1a, 1b and 1c**, at the repo owner's request.
+- **Pairing code:** base64url of `1 ‖ channel id ‖ key ‖ writer token ‖ relay URL`, with the ids and keys packed as bytes rather than JSON, which keeps it at about 150 characters.
+- **Hooks run async** (`"async": true`), so Claude Code never waits on them; the script also has its own time limits.
+- **`start` doesn't create a card.** A suggestion appears with the first prompt (`suggest`), so sessions you open and close without asking anything stay off the board. `start` sets a linked todo to "your turn".
+- **`hello`:** `/todos:connect` sends one, with the machine's hostname (encrypted), so the dialog can name connected machines and the board can confirm the connection.
+- **The board deletes every message once handled** and keeps suggestions in `localStorage` (`todos.sessions`), so the relay is only a mailbox.
+- **Cloud sessions** can't keep `~/.config/todos` between runs, so the plugin also reads the pairing code from `TODOS_CONNECTION`.
+- **CSP:** `relayBase` stays empty until the relay is deployed. A smoke check fails if `relayBase` is set without its origins in `connect-src`.
+
 ## Open questions to settle while building
 
-- **Better titles:** Claude Code may write a session title or summary into the transcript (`transcript_path` in the hook input). If it does, update the card's title from it on `Stop`.
-- **Desktop app deep links:** whether the Claude desktop app exposes a deep link per session that the badge could open, instead of copying the resume command.
+- **Better titles:** Claude Code may write a session title or summary into the transcript (`transcript_path` in the hook input). If it does, update the card's title from it on `Stop`. *Not done yet: `SessionStart` now also passes an optional `session_title`, which may be the simpler source.*
+- **Desktop app deep links:** whether the Claude desktop app exposes a deep link per session that the badge could open, instead of copying the resume command. *Not done yet: the badge copies `claude --resume <id>`.*

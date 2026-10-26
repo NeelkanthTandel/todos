@@ -4,7 +4,7 @@ Three features, built **one at a time, in this order**. Each depends on the one 
 
 | # | Milestone | Plan | Status |
 | --- | --- | --- | --- |
-| 1 | Encrypted relay + Claude Code session suggestions | [01-relay-and-claude-suggestions.md](01-relay-and-claude-suggestions.md) | Not started |
+| 1 | Encrypted relay + Claude Code session suggestions | [01-relay-and-claude-suggestions.md](01-relay-and-claude-suggestions.md) | In review (1a, 1b and 1c in one PR) |
 | 2 | Live sharing (read-only for viewers) | [02-live-sharing.md](02-live-sharing.md) | Not started |
 | 3 | Syncing your own list across devices | [03-device-sync.md](03-device-sync.md) | Not started |
 
@@ -48,7 +48,9 @@ One Durable Object class, `Channel`, one instance per channel id (128-bit random
 | `share` | 2. Live sharing | The sharer (owner token) | Anyone with the channel id (the key in the link keeps it private) | Latest state blob |
 | `sync` | 3. Device sync | Every paired device (writer tokens) | Same devices | Latest state blob + version |
 
-### API (draft, finalize in milestone 1)
+### API
+
+Finalized in milestone 1; [`relay/README.md`](../../relay/README.md) is the reference. Changes from the draft below: `GET /c/:id/writers` lists paired machines, a WebSocket carries its token in a subprotocol (`["todos", "bearer.<token>"]`, since browsers can't set headers on one), and writes allow a burst of 5 before the 2/s limit.
 
 | Method and path | Auth | Does |
 | --- | --- | --- |
