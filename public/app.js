@@ -726,12 +726,15 @@
     menu.innerHTML = '<p>Move to</p>' + LANES.map((l, i) =>
       '<button role="menuitem" data-prio="' + l.k + '"' + (l.k === t.prio ? ' aria-current="true"' : "") + '>' +
       heat(l.k) + '<span>' + l.name + (l.k === t.prio ? " (here)" : "") + '</span><kbd>' + (i + 1) + '</kbd></button>').join("");
+    placeMenu(btn);
+    (menu.querySelector('button:not([aria-current="true"])') || menu.querySelector("button")).focus();
+  }
+  function placeMenu(btn) {
     menu.hidden = false;
     const r = btn.getBoundingClientRect(), mw = menu.offsetWidth, mh = menu.offsetHeight;
     let left = Math.min(r.right - mw, window.innerWidth - mw - 8); left = Math.max(8, left);
     let top = r.bottom + 6; if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 6);
     menu.style.left = left + "px"; menu.style.top = top + "px";
-    (menu.querySelector('button:not([aria-current="true"])') || menu.querySelector("button")).focus();
   }
   function closeMenu(refocus) {
     if (menu.hidden) return;
@@ -740,6 +743,8 @@
     menuFor = null; menuBtn = null;
   }
   menu.addEventListener("click", e => {
+    const x = e.target.closest("button[data-export]");
+    if (x) { closeMenu(true); exportAs(x.dataset.export); return; }
     const b = e.target.closest("button[data-prio]"); if (!b) return;
     const id = menuFor; closeMenu();
     if (find(id)?.prio !== b.dataset.prio) moveTo(id, b.dataset.prio);
@@ -753,7 +758,7 @@
     else if (/^[1-4]$/.test(e.key)) { e.preventDefault(); btns[+e.key - 1].click(); }
     else if (e.key === "Escape" || e.key === "Tab") { e.preventDefault(); e.stopPropagation(); closeMenu(true); }
   });
-  document.addEventListener("pointerdown", e => { if (!menu.hidden && !menu.contains(e.target) && !e.target.closest('[data-act="move"]')) closeMenu(); });
+  document.addEventListener("pointerdown", e => { if (!menu.hidden && !menu.contains(e.target) && !e.target.closest('[data-act="move"], #exportBtn')) closeMenu(); });
   window.addEventListener("resize", () => { closeMenu(); syncInput(); });
   board.addEventListener("scroll", () => closeMenu(), true);
 
@@ -791,18 +796,65 @@
     toast(n === 1 ? "Cleared 1 done todo" : "Cleared " + n + " done todos", "Undo", undo);
   });
 
-  // ---------- backup: export / import a JSON file ----------
-  // File shape: { app: "todos", version: 1, exported, items: Todo[] }. A bare Todo[] imports too.
-  const MAX_IMPORT_BYTES = 2e6, MAX_IMPORT_ITEMS = 5000;
-  $("exportBtn").addEventListener("click", () => {
-    const data = { app: "todos", version: 1, exported: new Date().toISOString(), items };
+  // ---------- export: plain text, or a JSON backup ----------
+  const EXPORTS = [
+    { k: "copy", name: "Copy as text" },
+    { k: "txt", name: "Download as text (.txt)" },
+    { k: "json", name: "Download backup (.json)" },
+  ];
+  $("exportBtn").addEventListener("click", e => {
+    if (!menu.hidden && menuBtn === e.currentTarget) { closeMenu(); return; }
+    closeMenu();
+    menuFor = null; menuBtn = e.currentTarget;
+    menu.innerHTML = '<p>Export</p>' + EXPORTS.map((x, i) =>
+      '<button role="menuitem" data-export="' + x.k + '"><span>' + x.name + '</span><kbd>' + (i + 1) + '</kbd></button>').join("");
+    placeMenu(e.currentTarget);
+    menu.querySelector("button").focus();
+  });
+  // Plain text, one group per lane (p1 = Boiling over … p4 = Fridge), numbered. Done todos follow the open ones,
+  // struck through with a combining long stroke (U+0336) so it survives being pasted anywhere.
+  const strike = s => [...s].map(c => c + "\u0336").join("");
+  function asText() {
+    const groups = [];
+    LANES.forEach((l, i) => {
+      const open = items.filter(t => t.prio === l.k && !t.done).map(t => t.text);
+      const done = items.filter(t => t.prio === l.k && t.done)
+        .sort((a, b) => (a.doneAt || 0) - (b.doneAt || 0)).map(t => strike(t.text));
+      const lines = [...open, ...done];
+      if (lines.length) groups.push("p" + (i + 1) + "\n\n" + lines.map((x, j) => (j + 1) + ". " + x).join("\n"));
+    });
+    return groups.join("\n\n\n") + "\n";
+  }
+  function download(name, type, content) {
     const a = document.createElement("a");
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }));
-    a.download = "todos-" + new Date().toISOString().slice(0, 10) + ".json";
+    a.href = URL.createObjectURL(new Blob([content], { type }));
+    a.download = name;
     document.body.append(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
-    toast("Exported " + items.length + (items.length === 1 ? " todo" : " todos"));
-  });
+  }
+  async function exportAs(kind) {
+    if (!items.length) { toast("Nothing to export yet"); return; }
+    const count = items.length + (items.length === 1 ? " todo" : " todos");
+    const day = new Date().toISOString().slice(0, 10);
+    if (kind === "copy") {
+      const text = asText();
+      try { await navigator.clipboard.writeText(text); }
+      catch { toast("Couldn't copy. Try Download as text instead."); return; }
+      toast("Copied " + count + " as text");
+      // Don't offer your own export back as a clipboard suggestion.
+      if (crypto.subtle) rememberClip(await sha256(text.trim()));
+    } else if (kind === "txt") {
+      download("todos-" + day + ".txt", "text/plain;charset=utf-8", asText());
+      toast("Exported " + count + " as text");
+    } else {
+      // File shape: { app: "todos", version: 1, exported, items: Todo[] }. A bare Todo[] imports too.
+      download("todos-" + day + ".json", "application/json", JSON.stringify({ app: "todos", version: 1, exported: new Date().toISOString(), items }, null, 2));
+      toast("Exported " + count);
+    }
+  }
+
+  // ---------- import a JSON backup ----------
+  const MAX_IMPORT_BYTES = 2e6, MAX_IMPORT_ITEMS = 5000;
   $("importBtn").addEventListener("click", () => $("importFile").click());
   $("importFile").addEventListener("change", async e => {
     const file = e.target.files[0]; e.target.value = "";
