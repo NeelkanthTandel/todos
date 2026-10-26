@@ -23,9 +23,11 @@ PROFILE="$(mktemp -d)"
 trap 'kill $SERVER 2>/dev/null || true; rm -rf "$PROFILE"' EXIT
 for _ in $(seq 1 50); do curl -fs "http://127.0.0.1:$PORT/" >/dev/null && break; sleep 0.1; done
 
+# Virtual time skips ahead to the next timer whenever the page is idle, including while it waits on real work
+# like decrypting, so the budget is generous; an idle page burns through it in moments.
 # shellcheck disable=SC2086
 OUT="$("$CHROME" ${CHROME_FLAGS:-} --headless=new --disable-gpu --no-first-run --no-default-browser-check \
-  --user-data-dir="$PROFILE" --window-size=1400,900 --virtual-time-budget=15000 \
+  --user-data-dir="$PROFILE" --window-size=1400,900 --virtual-time-budget=3600000 \
   --dump-dom "http://127.0.0.1:$PORT/tests/smoke.html" 2>/dev/null)"
 
 # Print the check list as plain text.

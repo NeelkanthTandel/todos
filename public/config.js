@@ -9,4 +9,8 @@ window.TODO_CONFIG = {
   // Cookies go to the API only when it's on this site's origin. Use "include" for an API on another origin
   // (it must then send CORS headers for this exact origin, with Access-Control-Allow-Credentials: true).
   credentials: "same-origin",
+  // The Todos relay (relay/ in the repo) that carries encrypted Claude Code session updates, e.g.
+  // "https://todos-relay.<account>.workers.dev". Empty hides Connect Claude Code. When you set it, also add its
+  // https:// and wss:// origins to connect-src in the Content-Security-Policy in index.html.
+  relayBase: "",
 };

@@ -64,7 +64,7 @@
 
   try {
     // Make sure the iframe gets the files on disk, not ones the browser cached from an earlier run.
-    for (const f of ["index.html", "config.js", "storage.js", "app.js", "styles.css"]) await fetch("../public/" + f, { cache: "reload" });
+    for (const f of ["index.html", "config.js", "storage.js", "clipboard.js", "relay.js", "app.js", "styles.css"]) await fetch("../public/" + f, { cache: "reload" });
     for (const k of Object.keys(localStorage)) if (k.startsWith("todos.")) localStorage.removeItem(k);
 
     // A corrupted saved value must not take the page down.
@@ -243,6 +243,182 @@
       await comeBack("Water the garden");
       check("nothing is suggested once turned off", box.value === "" && localStorage.getItem("todos.clip") === "off");
     }
+
+    // ---------- Claude Code sessions, through a fake relay (the todos:relay-seam test seam) ----------
+    for (const k of Object.keys(localStorage)) if (k.startsWith("todos.")) localStorage.removeItem(k);
+    // Shared with claude-plugin/test/plugin.test.mjs: key = bytes 0..31; the vector was encrypted by the plugin.
+    const KEY = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8";
+    const VECTOR = "ZGVmZ2hpamtsbW5vfdefbLvZRtjfyduXx8Tf9nPFLnIH9H0DffCPhtMp3b_GLfc-NA1Ll2fQuSFI0PPthwaQ7gP1w3fTrYj5AKH_Mw1zyi3lnU2fG_8iJsZlNqK4liVnfqMjVcXTIKpgAmMInuCP11RRP5BsjduE_hBwjrwdIFbShIQtXF2F";
+    const INBOX_ID = "AAAAAAAAAAAAAAAAAAAAAA";
+    localStorage.setItem("todos.inbox", JSON.stringify({ relay: "https://relay.test", id: INBOX_ID, key: KEY, ownerToken: "owner-token" }));
+    await load(); await sleep(100);
+    check("Connect Claude Code is hidden without a relay", !shown($("claudeBtn")) && $("claudeBtn").hidden);
+    check("relay origin is allowed by the CSP when relayBase is set", (() => {
+      const base = win().TodoStorage.config.relayBase;
+      if (!base) return true;
+      const csp = doc().querySelector('meta[http-equiv="Content-Security-Policy"]').content;
+      const origin = new URL(base).origin;
+      return csp.includes(origin) && csp.includes(origin.replace(/^http/, "ws"));
+    })());
+    const decoded = await win().TodoRelay.decrypt(KEY, VECTOR);
+    check("decrypts a message the plugin encrypted", JSON.stringify(decoded) === JSON.stringify({ event: "suggest", title: "Fix the flaky login test", sessionId: "abc-123", project: "todos", kind: "local", at: 1793000000000 }));
+
+    const relayCalls = [];
+    let sock = null;
+    class FakeSocket {
+      constructor(url, protocols) { this.url = url; this.protocols = protocols; sock = this; setTimeout(() => this.onopen && this.onopen(), 0); }
+      send() {}
+      close() { this.closed = true; }
+    }
+    const writerToken = win().TodoRelay.toB64u(new Uint8Array(32).fill(9));
+    async function fakeFetch(url, init) {
+      relayCalls.push(init.method + " " + url.replace("https://relay.test", ""));
+      if (init.headers.Authorization !== "Bearer owner-token") return new Response("{}", { status: 401 });
+      if (init.method === "POST" && url.endsWith("/writers")) return new Response(JSON.stringify({ wid: "w2", token: writerToken, created: Date.now() }), { status: 201 });
+      if (init.method === "GET" && url.endsWith("/writers")) return new Response(JSON.stringify({ writers: [{ wid: "w1", created: Date.now(), used: Date.now() }] }));
+      return new Response(null, { status: 204 });
+    }
+    win().dispatchEvent(new (win().CustomEvent)("todos:relay-seam", { detail: { base: "https://relay.test", fetch: fakeFetch, WebSocket: FakeSocket } }));
+    await waitFor(() => sock);
+    check("follows the inbox over a WebSocket, token in a subprotocol", sock && sock.url === "wss://relay.test/c/" + INBOX_ID &&
+      sock.protocols.includes("bearer.owner-token") && shown($("claudeBtn")), sock && sock.url);
+    check("tray hidden with no suggestions", !shown($("tray")));
+
+    let seq = 0;
+    // Waits on the app's event rather than polling: decrypting takes real time, and polling would burn through
+    // the virtual time budget tests/run.sh gives headless Chrome.
+    function deliverRaw(ev) {
+      const handled = new Promise(r => win().addEventListener("todos:relaymsg", r, { once: true }));
+      sock.onmessage({ data: JSON.stringify(ev) });
+      return handled;
+    }
+    async function deliver(msg) {
+      const id = "m" + ++seq;
+      await deliverRaw({ type: "message", id, data: await win().TodoRelay.encrypt(KEY, msg), at: Date.now(), wid: "w1" });
+      return id;
+    }
+    const ev = (event, sessionId, extra = {}) => Object.assign({ event, sessionId, project: "todos", kind: "local", at: Date.now() }, extra);
+    const cards = () => [...doc().querySelectorAll("#trayList li[data-session]")];
+    const cardFor = id => doc().querySelector('#trayList li[data-session="' + id + '"]');
+    const key = (el, k, opts = {}) => el.dispatchEvent(new (win().KeyboardEvent)("keydown", Object.assign({ key: k, bubbles: true, cancelable: true }, opts)));
+    const todoFor = id => stored().find(t => t.session && t.session.id === id);
+
+    await deliver(ev("start", "sess-1"));
+    check("a session that hasn't been given a task isn't suggested", !shown($("tray")));
+    const m2 = await deliver(ev("suggest", "sess-1", { title: "Fix the flaky login test" }));
+    let c = cardFor("sess-1");
+    check("a suggestion appears with its title and status", shown($("tray")) && c && c.querySelector(".tray-title").textContent === "Fix the flaky login test" &&
+      c.dataset.state === "running" && c.querySelector(".tray-meta").textContent.startsWith("Running · todos"), c && c.textContent);
+    check("handled messages are deleted from the relay", relayCalls.includes("DELETE /c/" + INBOX_ID + "/messages/" + m2) && relayCalls.includes("DELETE /c/" + INBOX_ID + "/messages/m1"));
+    check("suggestions don't look like todos", !c.closest(".board") && getComputedStyle(c).borderStyle === "dashed" && !!c.querySelector(".tray-icon svg"));
+
+    c.focus(); key(c, "Enter");
+    let linked = todoFor("sess-1");
+    check("Enter adds it to Boiling over with a session link", rows("h").includes("Fix the flaky login test") && linked && linked.prio === "h" &&
+      linked.session.state === "running" && linked.session.project === "todos" && !shown($("tray")), JSON.stringify(linked));
+    key(doc().activeElement || doc().body, "z", { ctrlKey: true });
+    check("undo removes it and puts the suggestion back", !todoFor("sess-1") && !!cardFor("sess-1") && shown($("tray")));
+    c = cardFor("sess-1"); c.focus(); key(c, "2");
+    check("2 adds it to Simmering", rows("m").includes("Fix the flaky login test") && todoFor("sess-1").prio === "m" && !cardFor("sess-1"));
+
+    await deliver(ev("needs_you", "sess-1"));
+    let li = doc().querySelector('#list-m li[data-id="' + todoFor("sess-1").id + '"]');
+    check("a status update changes the badge on the added todo", li.querySelector(".sess").dataset.state === "needs_you" &&
+      li.querySelector(".sess").textContent === "Needs you" && todoFor("sess-1").session.state === "needs_you");
+    check("the page title counts sessions that need you", doc().title === "(1) Todos", doc().title);
+    await deliver(ev("running", "sess-1", { at: Date.now() - 60000 }));
+    check("an older message arriving late doesn't win", todoFor("sess-1").session.state === "needs_you");
+    await deliver(ev("your_turn", "sess-1"));
+    check("the badge follows the session", doc().querySelector("#list-m .sess").dataset.state === "your_turn" && doc().title === "Todos", doc().title);
+
+    await deliver(ev("suggest", "sess-2", { title: "Write the release notes" }));
+    c = cardFor("sess-2"); c.focus(); key(c, "Escape");
+    check("Esc dismisses it", !cardFor("sess-2") && !shown($("tray")));
+    await deliver(ev("running", "sess-2"));
+    check("a dismissed suggestion stays dismissed", !cardFor("sess-2"));
+
+    const callsBefore = relayCalls.length;
+    await deliverRaw({ type: "message", id: "bad1", data: "not base64!", wid: "w1" });
+    await deliverRaw({ type: "message", id: "bad2", data: await win().TodoRelay.encrypt("A".repeat(43), ev("suggest", "wrong-key", { title: "x" })), wid: "w1" });
+    await deliverRaw({ type: "message", id: "bad3", data: await win().TodoRelay.encrypt(KEY, ["suggest"]), wid: "w1" });
+    await deliver(ev("suggest", "big", { title: "x".repeat(5000) }));
+    await deliver(ev("suggest", "../../etc", { title: "bad id" }));
+    await deliver(ev("explode", "sess-3", { title: "unknown event" }));
+    await deliver(ev("suggest", "sess-4", { title: "project too long", project: "p".repeat(500) }));
+    await deliverRaw({ type: "message", id: "bad4", data: "A".repeat(40000), wid: "w1" });
+    check("malformed, undecryptable or oversized messages are ignored", cards().length === 0 && !shown($("tray")));
+    check("…and still cleared from the relay", relayCalls.length - callsBefore === 8 && relayCalls.slice(-8).every(x => x.startsWith("DELETE")));
+
+    const evilTitle = '<img src=x onerror="parent.__xss2=1">';
+    await deliver(ev("suggest", "sess-5", { title: evilTitle }));
+    check("a title containing markup renders as text", cardFor("sess-5").querySelector(".tray-title").textContent === evilTitle &&
+      !doc().querySelector("#trayList img") && !window.__xss2);
+    await deliver(ev("suggest", "sess-6", { title: null, project: "api" }));
+    check("'Untitled session' fallback", cardFor("sess-6").querySelector(".tray-title").textContent === "Untitled session in api");
+    const old = Date.now() - 25 * 3600e3;
+    await deliver(ev("suggest", "sess-7", { title: "Long gone", at: old }));
+    await deliver(ev("ended", "sess-7", { at: old + 1000 }));
+    check("an ended suggestion expires after a day", !cardFor("sess-7"));
+    await deliver(ev("suggest", "sess-8", { title: "Ended just now" }));
+    await deliver(ev("ended", "sess-8"));
+    check("…but stays until then, shown as ended", cardFor("sess-8") && cardFor("sess-8").dataset.state === "ended");
+    check("newest suggestion comes first", cards()[0].dataset.session === "sess-8", cards().map(x => x.dataset.session).join());
+
+    doc().activeElement.blur();
+    key(doc().body, "a");
+    check("A adds the newest suggestion to Boiling over", rows("h").includes("Ended just now") && !cardFor("sess-8"));
+    c = cardFor("sess-6"); c.focus(); key(c, "e");
+    const edit = c.querySelector(".tray-edit") || cardFor("sess-6").querySelector(".tray-edit");
+    edit.value = "Look at the API rate limits"; edit.dispatchEvent(new (win().Event)("input", { bubbles: true }));
+    key(edit, "Enter");
+    check("E edits the title, then Enter adds it", rows("h").includes("Look at the API rate limits") && todoFor("sess-6").session.project === "api");
+
+    await load(); await sleep(100);
+    win().dispatchEvent(new (win().CustomEvent)("todos:relay-seam", { detail: { base: "https://relay.test", fetch: fakeFetch, WebSocket: FakeSocket } }));
+    check("suggestions and badges survive a reload", !!cardFor("sess-5") && doc().querySelectorAll(".board .sess").length === 3);
+
+    // Pairing: the dialog shows a /todos:connect command holding this inbox, the key and a new writer token.
+    relayCalls.length = 0;
+    $("claudeBtn").click();
+    await waitFor(() => $("claudeCmd").textContent.startsWith("/todos:connect "));
+    const code = $("claudeCmd").textContent.slice("/todos:connect ".length);
+    const bytes = win().TodoRelay.fromB64u(code);
+    check("Connect shows a pairing code with the inbox, key and writer token", $("claudeDialog").open && bytes[0] === 1 &&
+      win().TodoRelay.toB64u(bytes.slice(1, 17)) === INBOX_ID && win().TodoRelay.toB64u(bytes.slice(17, 49)) === KEY &&
+      win().TodoRelay.toB64u(bytes.slice(49, 81)) === writerToken && new TextDecoder().decode(bytes.slice(81)) === "https://relay.test" &&
+      code.length < 160 && relayCalls.includes("POST /c/" + INBOX_ID + "/writers"), code);
+    check("…and lists connected machines with Disconnect", $("claudeMachines").querySelectorAll("button[data-wid]").length === 1);
+    $("claudeMachines").querySelector("button[data-wid]").click();
+    await waitFor(() => $("toastMsg").textContent.startsWith("Disconnected"));
+    await sleep(50); // let the dialog refresh finish before the page is swapped
+    check("Disconnect revokes that machine's token", relayCalls.includes("DELETE /c/" + INBOX_ID + "/writers/w1"));
+    $("claudeClose").click();
+
+    // No inbox yet: Connect creates one first.
+    localStorage.removeItem("todos.inbox");
+    await load(); await sleep(100);
+    relayCalls.length = 0;
+    async function createFetch(url, init) {
+      if (init.method === "POST" && url.endsWith("/c")) { relayCalls.push("POST /c"); return new Response(JSON.stringify({ id: "BBBBBBBBBBBBBBBBBBBBBB", kind: "inbox", ownerToken: "owner-token" }), { status: 201 }); }
+      return fakeFetch(url, init);
+    }
+    win().dispatchEvent(new (win().CustomEvent)("todos:relay-seam", { detail: { base: "https://relay.test", fetch: createFetch, WebSocket: FakeSocket } }));
+    $("claudeBtn").click();
+    await waitFor(() => $("claudeCmd").textContent.startsWith("/todos:connect "));
+    const made = JSON.parse(localStorage.getItem("todos.inbox") || "{}");
+    check("Connect creates the board's inbox, with a key that never leaves the browser", relayCalls[0] === "POST /c" && made.id === "BBBBBBBBBBBBBBBBBBBBBB" &&
+      /^[\w-]{43}$/.test(made.key) && !relayCalls.join(" ").includes(made.key) && sock.url.endsWith("/c/BBBBBBBBBBBBBBBBBBBBBB"), JSON.stringify([relayCalls, made, sock.url]));
+    $("claudeClose").click();
+
+    // Imported session links go through normalize() like everything else.
+    await importFile(JSON.stringify({ items: [
+      { id: "s1", text: "linked", done: false, prio: "l", created: 1, session: { id: "abc", state: "needs_you", project: "web", kind: "cloud", updatedAt: 5, extra: 1 } },
+      { id: "s2", text: "bad link", done: false, prio: "l", created: 2, session: { id: "<script>", state: "running" } },
+      { id: "s3", text: "odd state", done: false, prio: "l", created: 3, session: { id: "def", state: "hacked", project: 7 } },
+    ] }));
+    const s1 = stored().find(t => t.id === "s1"), s2 = stored().find(t => t.id === "s2"), s3 = stored().find(t => t.id === "s3");
+    check("normalize() keeps valid session links and drops bad ones", JSON.stringify(s1.session) === '{"id":"abc","state":"needs_you","project":"web","kind":"cloud","updatedAt":5}' &&
+      !("session" in s2) && s3.session.state === "ended" && s3.session.project === "", JSON.stringify([s1, s2, s3]));
   } catch (e) {
     check("no exceptions", false, e && e.stack || String(e));
   }

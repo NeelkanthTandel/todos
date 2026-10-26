@@ -17,6 +17,7 @@
     move:  '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3 2 6l3 3M2 6h9M11 13l3-3-3-3M14 10H5"/></svg>',
     wip:   '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="8" cy="8" r="5.6"/><path d="M8 2.4a5.6 5.6 0 0 1 0 11.2z" fill="currentColor" stroke="none"/></svg>',
     grip:  '<svg viewBox="0 0 8 14" fill="currentColor"><circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/><circle cx="2" cy="7" r="1.2"/><circle cx="6" cy="7" r="1.2"/><circle cx="2" cy="12" r="1.2"/><circle cx="6" cy="12" r="1.2"/></svg>',
+    session: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="1.75" y="2.75" width="12.5" height="10.5" rx="2.25"/><path d="m4.75 6.25 2 1.75-2 1.75M8.5 10h2.75"/></svg>',
   };
   function heat(k) {
     if (k === "n") return '<svg class="heat" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M7 1.5v11M2.2 4.2l9.6 5.6M2.2 9.8l9.6-5.6"/></svg>';
@@ -29,7 +30,7 @@
   }
 
   // ---------- state ----------
-  let items = [];               // {id, text, done, prio, created, doneAt?, wip?}
+  let items = [];               // {id, text, done, prio, created, doneAt?, wip?, session?}
   let editingId = null, justId = null, enterIds = new Set(), landedId = null;
   const linger = new Map();     // id -> timer: just-done items still shown in lane
   const lsGet = k => { try { return localStorage.getItem(k); } catch { return null; } };
@@ -38,6 +39,19 @@
   // corrupted or crafted value can't break the page: known fields only, right types, safe unique ids.
   const ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
   const num = v => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const SESSION_RE = /^[\w-]{1,64}$/;
+  const STATES = { running: "Running", needs_you: "Needs you", your_turn: "Your turn", ended: "Ended" };
+  // A todo added from a Claude Code session keeps a link to it: { id, state, project, kind, updatedAt }.
+  function normSession(s) {
+    if (!s || typeof s !== "object" || typeof s.id !== "string" || !SESSION_RE.test(s.id)) return null;
+    return {
+      id: s.id,
+      state: Object.hasOwn(STATES, s.state) ? s.state : "ended",
+      project: typeof s.project === "string" ? s.project.trim().slice(0, 120) : "",
+      kind: s.kind === "cloud" ? "cloud" : "local",
+      updatedAt: num(s.updatedAt),
+    };
+  }
   function normalize(arr) {
     if (!Array.isArray(arr)) return [];
     const seen = new Set(), out = [];
@@ -49,6 +63,8 @@
       const todo = { id: t.id, text: t.text.trim().slice(0, 500), done, prio: ORDER.includes(t.prio) ? t.prio : "n", created };
       if (done) todo.doneAt = num(t.doneAt) || created;
       else if (t.wip === true) todo.wip = true;
+      const session = normSession(t.session);
+      if (session) todo.session = session;
       out.push(todo);
     }
     return out;
@@ -229,6 +245,7 @@
       li.append(txt);
     }
 
+    if (t.session && !inPanel) li.append(badge(t.session));
     if (t.wip && !t.done && !inPanel) {
       li.classList.add("wip");
       const chip = document.createElement("button");
@@ -263,6 +280,7 @@
     $("summary").textContent = items.length ? open + " open" : "";
     $("doneN").textContent = done;
     renderPanel();
+    updateTitle();
     justId = null; enterIds = new Set(); landedId = null;
   }
 
@@ -412,8 +430,10 @@
     if (clip && e.key === "Escape") { e.preventDefault(); e.stopPropagation(); dismissClip(); announce("Clipboard suggestion dismissed"); return; }
     if (clip && e.key === "Tab" && !e.shiftKey) { e.preventDefault(); endClip(); input.setSelectionRange(input.value.length, input.value.length); return; }
     // Composer empty and the mouse moved onto a todo since you last typed: shortcuts go to that todo.
-    if (!input.value && !e.metaKey && !e.ctrlKey && !e.altKey && ptrMovedAt > typedAt && /^([1-4sSxXeE]|Delete)$/.test(e.key)) {
-      const li = hoveredRow();
+    if (!input.value && !e.metaKey && !e.ctrlKey && !e.altKey && ptrMovedAt > typedAt && /^([1-4sSxXeE]|Delete|Enter)$/.test(e.key)) {
+      const card = hoveredCard();
+      if (card && trayAction(card, e.key, true)) { e.preventDefault(); return; }
+      const li = e.key !== "Enter" && hoveredRow();
       if (li && rowAction(li, e.key, true)) { e.preventDefault(); return; }
     }
     if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); $("addForm").requestSubmit(); return; }
@@ -555,6 +575,7 @@
     else if (act === "edit") { editingId = id; render(); }
     else if (act === "move") openMenu(btn, id);
     else if (act === "wip") { toggleWip(id); focusRow(id, ".text"); }
+    else if (act === "session") copyResume(id);
   }
   function toggleWip(id) {
     const t = find(id); if (!t || t.done) return;
@@ -880,6 +901,398 @@
     toast("Imported " + incoming.length + (incoming.length === 1 ? " todo" : " todos"), "Undo", undo);
   });
 
+  // ---------- Claude Code sessions ----------
+  // With the Claude Code plugin connected (claude-plugin/ in the repo), every session sends encrypted events to
+  // this board's inbox on the relay (relay.js). A new session waits in the tray as a suggestion; once added, its
+  // todo shows the session's live status. Decrypted messages are untrusted: validated strictly, shown as text.
+  const INBOX_KEY = NS + ".inbox", SESS_KEY = NS + ".sessions";
+  const EVENT_STATE = { start: "your_turn", suggest: "running", running: "running", needs_you: "needs_you", your_turn: "your_turn", ended: "ended" };
+  const ENDED_TTL = 24 * 3600e3, IDLE_TTL = 7 * 24 * 3600e3, MAX_SESSIONS = 200;
+  const ADD_SESSION = "add Claude session";
+  let relay = null, inbox = null, sub = null, trayEdit = null;
+  const handled = new Set();
+
+  // Known sessions, newest status per id: normSession() fields plus title, suggested, dismissed, added, startedAt.
+  let sessions = loadSessions();
+  function loadSessions() {
+    const out = new Map();
+    try {
+      const arr = JSON.parse(lsGet(SESS_KEY) || "[]");
+      for (const raw of Array.isArray(arr) ? arr : []) {
+        const s = normSession(raw);
+        if (!s || out.has(s.id)) continue;
+        out.set(s.id, Object.assign(s, {
+          title: typeof raw.title === "string" && raw.title.trim() ? raw.title.trim().slice(0, 200) : null,
+          suggested: raw.suggested === true, dismissed: raw.dismissed === true, added: raw.added === true,
+          startedAt: num(raw.startedAt),
+        }));
+      }
+    } catch {}
+    return out;
+  }
+  function saveSessions() {
+    const now = Date.now();
+    for (const [id, s] of sessions) {
+      if ((s.state === "ended" && now - s.updatedAt > ENDED_TTL) || now - s.updatedAt > IDLE_TTL) sessions.delete(id);
+    }
+    const list = [...sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt).slice(0, MAX_SESSIONS);
+    sessions = new Map(list.map(s => [s.id, s]));
+    lsSet(SESS_KEY, JSON.stringify(list));
+  }
+
+  // One decrypted inbox message from the plugin. Anything unexpected drops the whole message.
+  const EVENTS = new Set([...Object.keys(EVENT_STATE), "hello"]);
+  function parseMessage(m) {
+    if (!m || typeof m !== "object" || Array.isArray(m) || !EVENTS.has(m.event)) return null;
+    if (typeof m.sessionId !== "string" || !SESSION_RE.test(m.sessionId)) return null;
+    if (typeof m.at !== "number" || !Number.isFinite(m.at) || m.at <= 0) return null;
+    if (m.project !== undefined && (typeof m.project !== "string" || m.project.length > 120)) return null;
+    if (m.title !== undefined && m.title !== null && (typeof m.title !== "string" || m.title.length > 200)) return null;
+    if (m.machine !== undefined && (typeof m.machine !== "string" || m.machine.length > 64)) return null;
+    return {
+      event: m.event, sessionId: m.sessionId,
+      at: Math.min(m.at, Date.now()), // a clock running ahead can't pin a status forever
+      project: (m.project || "").trim(), title: (m.title || "").replace(/\s+/g, " ").trim() || null,
+      kind: m.kind === "cloud" ? "cloud" : "local", machine: (m.machine || "").trim(),
+    };
+  }
+
+  function applyMessage(m, wid) {
+    if (m.event === "hello") {
+      if (inbox && /^[\w-]{1,32}$/.test(wid)) { inbox.machines = Object.assign({}, inbox.machines, { [wid]: m.machine }); saveInbox(); }
+      toast("Claude Code connected" + (m.machine ? " on " + m.machine : ""));
+      if ($("claudeDialog").open) refreshDialog();
+      return;
+    }
+    let s = sessions.get(m.sessionId);
+    if (!s) {
+      s = { id: m.sessionId, state: EVENT_STATE[m.event], project: m.project, kind: m.kind, updatedAt: 0,
+        title: null, suggested: false, dismissed: false, added: false, startedAt: m.at };
+      sessions.set(s.id, s);
+    }
+    if (m.event === "suggest") { s.suggested = true; s.title = m.title || s.title; s.startedAt = m.at; }
+    // Hooks run in parallel, so messages can arrive out of order: the newest one decides the status.
+    if (m.at >= s.updatedAt) {
+      s.state = EVENT_STATE[m.event]; s.updatedAt = m.at; s.kind = m.kind;
+      if (m.project) s.project = m.project;
+    }
+    saveSessions();
+    applySessions(true);
+    renderTray();
+  }
+
+  // Linked todos follow their session's newest status. That isn't an edit, so it stays out of undo history.
+  function applySessions(persist) {
+    let changed = false;
+    for (const t of items) {
+      const s = t.session && sessions.get(t.session.id);
+      if (!s || s.updatedAt <= t.session.updatedAt) continue;
+      t.session = { id: s.id, state: s.state, project: s.project, kind: s.kind, updatedAt: s.updatedAt };
+      changed = true;
+    }
+    if (changed && persist) { save(); updateBadges(); }
+    updateTitle();
+  }
+  function badge(s) {
+    const b = document.createElement("button");
+    b.className = "sess"; b.dataset.act = "session"; b.dataset.state = s.state;
+    const dot = document.createElement("span"); dot.className = "dot"; dot.setAttribute("aria-hidden", "true");
+    b.append(dot, STATES[s.state]);
+    b.title = s.kind === "cloud" ? "Cloud session" + (s.project ? " in " + s.project : "") : "Copy claude --resume " + s.id;
+    b.setAttribute("aria-label", "Claude session: " + STATES[s.state] + (s.kind === "cloud" ? ". Cloud session" : ". Copy the resume command"));
+    return b;
+  }
+  // Swap badges in place, so a status change doesn't disturb an open edit or a drag.
+  function updateBadges() {
+    for (const el of document.querySelectorAll("li[data-id] > .sess")) {
+      const t = find(el.closest("li").dataset.id);
+      if (t && t.session) el.replaceWith(badge(t.session));
+    }
+  }
+  async function copyResume(id) {
+    const s = find(id)?.session;
+    if (!s) return;
+    if (s.kind === "cloud") { toast("Cloud session" + (s.project ? " in " + s.project : "") + ". Open it at claude.ai/code"); return; }
+    const cmd = "claude --resume " + s.id;
+    try { await navigator.clipboard.writeText(cmd); } catch { toast("Couldn't copy. Run: " + cmd); return; }
+    toast("Copied " + cmd);
+    if (crypto.subtle) rememberClip(await sha256(cmd)); // not a clipboard suggestion
+  }
+  function updateTitle() {
+    const ids = new Set();
+    for (const s of trayList()) if (s.state === "needs_you") ids.add(s.id);
+    for (const t of items) if (t.session && !t.done && t.session.state === "needs_you") ids.add(t.session.id);
+    document.title = ids.size ? "(" + ids.size + ") Todos" : "Todos";
+  }
+
+  // ---------- the tray ----------
+  const untitled = s => "Untitled session" + (s.project ? " in " + s.project : "");
+  function age(ts) {
+    const m = Math.floor((Date.now() - ts) / 60e3);
+    if (m < 1) return "just now";
+    if (m < 60) return m + " min";
+    if (m < 1440) return Math.floor(m / 60) + " h";
+    return Math.floor(m / 1440) + " d";
+  }
+  function trayList() {
+    const linked = new Set(items.filter(t => t.session).map(t => t.session.id));
+    const now = Date.now();
+    return [...sessions.values()]
+      .filter(s => s.suggested && !s.dismissed && !s.added && !linked.has(s.id) && !(s.state === "ended" && now - s.updatedAt > ENDED_TTL))
+      .sort((a, b) => b.startedAt - a.startedAt);
+  }
+  function card(s) {
+    const li = document.createElement("li");
+    li.dataset.session = s.id; li.dataset.state = s.state; li.tabIndex = 0;
+    const title = s.title || untitled(s);
+    li.setAttribute("aria-label", "Claude session: " + title + ". " + STATES[s.state] + ". Enter adds it to " + LANE.h.name + ", Escape dismisses it.");
+    const icon = document.createElement("span"); icon.className = "tray-icon"; icon.setAttribute("aria-hidden", "true"); icon.innerHTML = ICON.session;
+    const body = document.createElement("div"); body.className = "tray-body";
+    if (trayEdit && trayEdit.id === s.id) {
+      const inp = document.createElement("input");
+      inp.className = "tray-edit"; inp.value = trayEdit.value; inp.maxLength = 500;
+      inp.setAttribute("aria-label", "Edit the title, then Enter adds it");
+      inp.addEventListener("input", () => { trayEdit.value = inp.value; });
+      body.append(inp);
+    } else {
+      const t = document.createElement("span"); t.className = "tray-title" + (s.title ? "" : " untitled"); t.textContent = title;
+      body.append(t);
+    }
+    const meta = document.createElement("span"); meta.className = "tray-meta";
+    const dot = document.createElement("span"); dot.className = "dot"; dot.setAttribute("aria-hidden", "true");
+    meta.append(dot, [STATES[s.state], s.project, (s.kind === "cloud" ? "cloud · " : "") + age(s.startedAt || s.updatedAt)].filter(Boolean).join(" · "));
+    body.append(meta);
+    const acts = document.createElement("div"); acts.className = "tray-acts";
+    const add = document.createElement("button"); add.type = "button"; add.className = "tray-add"; add.dataset.tact = "add";
+    add.textContent = "Add"; add.title = "Add to " + LANE.h.name + " (Enter, or 2–4 for another lane)";
+    const no = document.createElement("button"); no.type = "button"; no.className = "act"; no.dataset.tact = "dismiss";
+    no.innerHTML = ICON.cross; no.title = "Dismiss (Esc)"; no.setAttribute("aria-label", "Dismiss: " + title);
+    acts.append(add, no);
+    li.append(icon, body, acts);
+    return li;
+  }
+  function renderTray() {
+    const list = trayList(), ul = $("trayList");
+    const focused = document.activeElement && document.activeElement.closest && document.activeElement.closest("#trayList li");
+    const keep = focused && focused.dataset.session;
+    ul.replaceChildren(...list.map(card));
+    $("tray").hidden = list.length === 0;
+    const again = keep && ul.querySelector('li[data-session="' + CSS.escape(keep) + '"]');
+    const edit = trayEdit && ul.querySelector(".tray-edit");
+    if (edit) { edit.focus(); edit.setSelectionRange(edit.value.length, edit.value.length); }
+    else if (again) again.focus({ preventScroll: true });
+    else if (keep) (ul.querySelector("li") || input).focus({ preventScroll: true });
+    updateTitle();
+  }
+  function addSession(id, prio, text) {
+    const s = sessions.get(id);
+    if (!s) return;
+    trayEdit = null;
+    const before = snap();
+    const t = {
+      id: uid(), text: (text || s.title || untitled(s)).slice(0, 500), done: false, prio, created: Date.now(),
+      session: { id: s.id, state: s.state, project: s.project, kind: s.kind, updatedAt: s.updatedAt },
+    };
+    items.push(t); enterIds.add(t.id);
+    s.added = true; saveSessions();
+    record(ADD_SESSION, before);
+    save(); render(); renderTray();
+    toast("Added to " + LANE[prio].short, "Undo", undo);
+    announce("Added to " + LANE[prio].name);
+  }
+  // Undoing an add puts the suggestion back in the tray.
+  function unaddSessions() {
+    const linked = new Set(items.filter(t => t.session).map(t => t.session.id));
+    for (const s of sessions.values()) if (s.added && !linked.has(s.id)) s.added = false;
+    saveSessions(); renderTray();
+  }
+  function dismissSession(id) {
+    const s = sessions.get(id);
+    if (!s) return;
+    if (trayEdit && trayEdit.id === id) trayEdit = null;
+    s.dismissed = true; saveSessions(); renderTray();
+    announce("Suggestion dismissed");
+  }
+  // Card shortcuts, for a focused card and the card under the mouse (like rowAction for todos).
+  function trayAction(li, k, viaHover) {
+    const id = li.dataset.session;
+    if (k === "Enter" || k === "1") { addSession(id, "h"); return true; }
+    if (/^[2-4]$/.test(k)) { addSession(id, ORDER[+k - 1]); return true; }
+    if (k === "e" || k === "E") { trayEdit = { id, value: sessions.get(id)?.title || "" }; renderTray(); return true; }
+    if (k === "Escape" || k === "Delete" || k === "Backspace") {
+      if (!viaHover) li.focus(); // keeps focus in the tray: renderTray moves it to the next card
+      dismissSession(id); return true;
+    }
+    return false;
+  }
+  function hoveredCard() {
+    if (!ptr || dragId || editingId || trayEdit) return null;
+    const el = document.elementFromPoint(ptr.x, ptr.y);
+    return (el && el.closest("#trayList li[data-session]")) || null;
+  }
+  $("trayList").addEventListener("click", e => {
+    const li = e.target.closest("li[data-session]"), b = e.target.closest("[data-tact]");
+    if (!li || !b) return;
+    if (b.dataset.tact === "add") addSession(li.dataset.session, "h");
+    else { li.focus(); dismissSession(li.dataset.session); }
+  });
+  $("trayList").addEventListener("keydown", e => {
+    const li = e.target.closest("li[data-session]");
+    if (!li) return;
+    if (e.target.classList.contains("tray-edit")) {
+      if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); addSession(li.dataset.session, "h", e.target.value.trim()); }
+      else if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); trayEdit = null; li.focus(); renderTray(); }
+      return;
+    }
+    if (e.target !== li || e.metaKey || e.ctrlKey || e.altKey) return; // buttons keep Enter and Space
+    if (trayAction(li, e.key, false)) { e.preventDefault(); e.stopPropagation(); }
+    else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+      const sib = e.key === "ArrowRight" ? li.nextElementSibling : li.previousElementSibling;
+      if (sib) { e.preventDefault(); sib.focus(); }
+    }
+  });
+  $("trayList").addEventListener("focusout", e => {
+    if (trayEdit && e.target.classList.contains("tray-edit") && !e.currentTarget.contains(e.relatedTarget)) { trayEdit = null; renderTray(); }
+  });
+  setInterval(() => { if (!trayEdit && !$("tray").hidden) renderTray(); }, 60e3); // ages, and ended suggestions expiring
+
+  // ---------- the inbox on the relay ----------
+  function loadInbox() {
+    try {
+      const v = JSON.parse(lsGet(INBOX_KEY) || "null");
+      if (v && typeof v.relay === "string" && /^[\w-]{22}$/.test(v.id) && /^[\w-]{43}$/.test(v.key) && typeof v.ownerToken === "string") return v;
+    } catch {}
+    return null;
+  }
+  const saveInbox = () => lsSet(INBOX_KEY, JSON.stringify(inbox));
+  function startRelay(base, impl) {
+    if (sub) { sub.close(); sub = null; }
+    relay = TodoRelay.client(Object.assign({ base }, impl));
+    $("claudeBtn").hidden = false;
+    inbox = loadInbox();
+    if (inbox && inbox.relay !== relay.base) inbox = null; // made on a different relay
+    if (inbox) follow();
+  }
+  function follow() {
+    if (sub) sub.close();
+    sub = relay.subscribe(inbox, onRelayEvent);
+  }
+  async function onRelayEvent(ev) {
+    if (ev.type === "deleted") { // the inbox is gone (expired): the next Connect makes a new one
+      if (sub) { sub.close(); sub = null; }
+      inbox = null; lsSet(INBOX_KEY, "");
+      return;
+    }
+    if (ev.type !== "message" || typeof ev.id !== "string" || !/^[\w-]{1,32}$/.test(ev.id) || handled.has(ev.id)) return;
+    if (handled.size > 2000) handled.clear();
+    handled.add(ev.id);
+    const ch = inbox;
+    let m = null;
+    if (ch && typeof ev.data === "string" && ev.data.length <= 32768) {
+      try { m = parseMessage(await TodoRelay.decrypt(ch.key, ev.data)); } catch {}
+    }
+    if (m && ch === inbox) applyMessage(m, typeof ev.wid === "string" ? ev.wid : "");
+    // Handled, or junk we'll never be able to read: either way it's done.
+    if (ch) relay.deleteMessage(ch, ev.id).catch(() => {});
+    window.dispatchEvent(new Event("todos:relaymsg")); // lets tests/smoke.html know a message was handled
+  }
+  // Another tab of this browser may have handled messages or made the inbox.
+  window.addEventListener("storage", e => {
+    if (e.key === SESS_KEY) { sessions = loadSessions(); renderTray(); }
+    else if (e.key === INBOX_KEY && relay) {
+      const next = loadInbox();
+      if (next && next.relay === relay.base && (!inbox || inbox.id !== next.id)) { inbox = next; follow(); }
+      else if (next && inbox && next.id === inbox.id) inbox = next;
+    }
+  });
+
+  // ---------- Connect Claude Code (pairing) ----------
+  const dlg = $("claudeDialog");
+  async function ensureInbox() {
+    if (inbox) return inbox;
+    const r = await relay.create("inbox");
+    if (!r || !/^[\w-]{22}$/.test(r.id) || typeof r.ownerToken !== "string") throw new Error("bad reply");
+    inbox = { relay: relay.base, id: r.id, key: TodoRelay.newKey(), ownerToken: r.ownerToken, machines: {} };
+    saveInbox(); follow();
+    return inbox;
+  }
+  async function refreshDialog() {
+    $("claudeErr").hidden = true;
+    try {
+      const ch = await ensureInbox();
+      const reply = await relay.listWriters(ch);
+      const writers = (reply && Array.isArray(reply.writers) ? reply.writers : [])
+        .filter(w => w && typeof w.wid === "string" && /^[\w-]{1,32}$/.test(w.wid));
+      // One code per machine: reuse the shown code until a machine has connected with it.
+      const pending = ch.pending && writers.find(w => w.wid === ch.pending.wid && !w.used);
+      if (!pending) {
+        const w = await relay.mintWriter(ch);
+        if (!w || typeof w.wid !== "string" || !/^[\w-]{43}$/.test(w.token)) throw new Error("bad reply");
+        ch.pending = { wid: w.wid, token: w.token }; saveInbox();
+      }
+      const code = TodoRelay.pairingCode({ relay: ch.relay, channelId: ch.id, key: ch.key, writerToken: ch.pending.token });
+      $("claudeCmd").textContent = "/todos:connect " + code;
+      $("claudeCopy").disabled = false;
+      renderMachines(writers.filter(w => typeof w.used === "number"));
+    } catch {
+      $("claudeErr").hidden = false;
+    }
+  }
+  function renderMachines(list) {
+    const ul = $("claudeMachines"), names = (inbox && inbox.machines) || {};
+    if (!list.length) {
+      const li = document.createElement("li"); li.className = "muted"; li.textContent = "No machines connected yet.";
+      ul.replaceChildren(li); return;
+    }
+    ul.replaceChildren(...list.map(w => {
+      const li = document.createElement("li");
+      const name = document.createElement("span"); name.className = "machine";
+      const own = Object.hasOwn(names, w.wid) && typeof names[w.wid] === "string" && names[w.wid];
+      name.textContent = own || "Paired " + new Date(num(w.created)).toLocaleDateString(undefined, { day: "numeric", month: "short" });
+      const when = document.createElement("small"); when.textContent = "active " + (age(w.used) === "just now" ? "just now" : age(w.used) + " ago");
+      const b = document.createElement("button"); b.type = "button"; b.className = "ghost-btn"; b.dataset.wid = w.wid;
+      b.textContent = "Disconnect"; b.setAttribute("aria-label", "Disconnect " + name.textContent);
+      li.append(name, when, b);
+      return li;
+    }));
+  }
+  $("claudeBtn").addEventListener("click", () => {
+    $("claudeCmd").textContent = "Creating a pairing code…";
+    $("claudeCopy").disabled = true;
+    $("claudeMachines").replaceChildren();
+    dlg.showModal();
+    refreshDialog();
+  });
+  $("claudeClose").addEventListener("click", () => dlg.close());
+  dlg.addEventListener("click", e => { if (e.target === dlg) dlg.close(); }); // click outside the box
+  $("claudeCopy").addEventListener("click", async () => {
+    const cmd = $("claudeCmd").textContent;
+    try { await navigator.clipboard.writeText(cmd); } catch { toast("Couldn't copy. Select the command and copy it."); return; }
+    $("claudeCopy").textContent = "Copied";
+    setTimeout(() => { $("claudeCopy").textContent = "Copy"; }, 1500);
+    if (crypto.subtle) rememberClip(await sha256(cmd));
+  });
+  $("claudeMachines").addEventListener("click", async e => {
+    const b = e.target.closest("button[data-wid]");
+    if (!b || !inbox) return;
+    b.disabled = true;
+    try {
+      await relay.revokeWriter(inbox, b.dataset.wid);
+      if (inbox.machines) delete inbox.machines[b.dataset.wid];
+      saveInbox();
+      toast("Disconnected. That machine can't send to this board any more.");
+    } catch { toast("Couldn't disconnect. Try again."); }
+    refreshDialog();
+  });
+
+  // Hidden until config.js names a relay. tests/smoke.html swaps in a fake relay through this event.
+  const relayBase = window.TodoStorage?.config.relayBase;
+  if (relayBase && window.TodoRelay) startRelay(relayBase, {});
+  window.addEventListener("todos:relay-seam", e => {
+    const d = e.detail || {};
+    startRelay(d.base, { fetch: d.fetch, WebSocket: d.WebSocket });
+  });
+
   // ---------- history: every change can be undone / redone ----------
   const past = [], future = [];
   function snap() { return JSON.stringify(items); }
@@ -897,6 +1310,7 @@
     for (const tm of linger.values()) clearTimeout(tm);
     linger.clear(); editingId = null;
     items = JSON.parse(json);
+    applySessions(false); // an old snapshot may hold an older status
     save(); render();
   }
   function undo() {
@@ -904,6 +1318,7 @@
     if (!step) { toast("Nothing to undo"); return; }
     future.push({ label: step.label, items: snap() });
     restore(step.items);
+    if (step.label === ADD_SESSION) unaddSessions(); // the suggestion goes back to the tray
     toast("Undid " + step.label, "Redo", redo);
     announce("Undid " + step.label);
   }
@@ -930,6 +1345,7 @@
 
   // ---------- global keys ----------
   document.addEventListener("keydown", e => {
+    if ($("claudeDialog").open) return; // the dialog handles its own keys (Esc closes it)
     const tag = (e.target.tagName || "").toLowerCase();
     const typing = tag === "input" || tag === "textarea";
     // Ctrl/⌘+Z undo, Ctrl/⌘+Shift+Z or Ctrl+Y redo — for every change, from anywhere.
@@ -948,9 +1364,12 @@
     }
     if (typing || e.defaultPrevented) return;
     if (e.key === "/") { e.preventDefault(); input.focus(); return; }
-    if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.target.closest?.("li[data-id], .menu")) {
+    if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.target.closest?.("li[data-id], li[data-session], .menu")) {
+      const card = hoveredCard();
+      if (card && trayAction(card, e.key, true)) { e.preventDefault(); return; }
       const li = hoveredRow();
       if (li && rowAction(li, e.key, true)) { e.preventDefault(); return; }
+      if ((e.key === "a" || e.key === "A") && !e.shiftKey && trayList().length) { e.preventDefault(); addSession(trayList()[0].id, "h"); return; }
       if ((e.key === "f" || e.key === "F") && ptr) {
         const lane = document.elementFromPoint(ptr.x, ptr.y)?.closest(".board .lane");
         if (lane) { e.preventDefault(); setFocus(lane.dataset.prio); }
@@ -962,5 +1381,6 @@
   applyFocus();
   syncInput();
   render();
+  renderTray();
   input.focus();
 })();
