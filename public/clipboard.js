@@ -66,5 +66,6 @@
     return { ok: true };
   }
 
-  window.TodoClipboard = { check };
+  // globalThis is window in the browser; the Claude Code plugin loads a copy of this file in Node.
+  globalThis.TodoClipboard = { check };
 })();

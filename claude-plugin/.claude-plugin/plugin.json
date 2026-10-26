@@ -1,0 +1,11 @@
+{
+  "name": "todos",
+  "displayName": "Todos",
+  "version": "0.1.0",
+  "description": "Shows each new Claude Code session on your Todos board (todos.always17.com) as a suggestion, with live status. End-to-end encrypted.",
+  "author": { "name": "Neelkanth Tandel", "url": "https://github.com/NeelkanthTandel" },
+  "homepage": "https://github.com/NeelkanthTandel/todos/tree/main/claude-plugin",
+  "repository": "https://github.com/NeelkanthTandel/todos",
+  "license": "MIT",
+  "keywords": ["todos", "sessions", "status"]
+}
