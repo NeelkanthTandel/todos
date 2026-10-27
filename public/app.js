@@ -450,10 +450,12 @@
     if (n > 1) toast("Added " + n + " todos to " + LANE[prio].short, "Undo", undo);
   });
 
-  // ---------- clipboard suggestions (opt-in, Chromium only) ----------
+  // ---------- clipboard suggestions (opt-in, Chromium and the Mac app only) ----------
   // Come back to the tab with something new copied and it waits in the composer, selected: Enter adds it,
   // Backspace, Esc or typing dismiss it, Tab keeps it as a draft. Only Chromium can read the clipboard without
   // a click every time, so other browsers never see this. Handled text is remembered as a hash, never as text.
+  // The Mac app (mac/) hands over the pasteboard through a native message handler instead of navigator.clipboard;
+  // it answers only while the app is in front and never with text marked concealed (password managers).
   const CLIP_KEY = NS + ".clip", CLIP_SEEN_KEY = NS + ".clipSeen", CLIP_FRESH_KEY = NS + ".clipFresh";
   const CLIP_EXPIRE = 10 * 60e3; // a copy older than this is stale, like Gboard's clipboard suggestions
   let clipSupported = false, clipBusy = false, clipTimer = null;
@@ -481,6 +483,13 @@
     }
     return fresh.at;
   }
+  const nativeClip = () => window.webkit?.messageHandlers?.todosClipboard;
+  async function readClipboard() {
+    const native = nativeClip();
+    if (!native) return navigator.clipboard.readText();
+    const text = await native.postMessage("read");
+    return typeof text === "string" ? text : "";
+  }
   const composerIdle = () => !input.value && !editingId && !dragId &&
     (document.activeElement === input || document.activeElement === document.body || !document.activeElement);
 
@@ -492,7 +501,7 @@
     if (!clipOn() || clipBusy || clip || document.visibilityState !== "visible" || !composerIdle()) return;
     clipBusy = true;
     try {
-      const text = (await navigator.clipboard.readText()).trim();
+      const text = (await readClipboard()).trim();
       if (!text) return;
       const hash = await sha256(text);
       const age = Date.now() - firstSeen(hash);
@@ -540,7 +549,7 @@
   async function enableClip() {
     $("clipOffer").hidden = true;
     try {
-      const text = (await navigator.clipboard.readText()).trim();
+      const text = (await readClipboard()).trim();
       if (text) rememberClip(await sha256(text)); // you've just pasted or seen this one
       setClip("on");
       toast("Clipboard suggestions are on. Copy something, then come back here.");
@@ -558,12 +567,16 @@
   });
   window.addEventListener("focus", suggestFromClipboard);
   document.addEventListener("visibilitychange", suggestFromClipboard);
-  (async () => {
+  async function detectClip() {
+    if (nativeClip()) clipSupported = !!crypto.subtle;
     // Only Chromium knows the "clipboard-read" permission; Firefox and Safari throw here.
-    try { await navigator.permissions.query({ name: "clipboard-read" }); clipSupported = !!(navigator.clipboard?.readText && crypto.subtle); } catch {}
+    else try { await navigator.permissions.query({ name: "clipboard-read" }); clipSupported = !!(navigator.clipboard?.readText && crypto.subtle); } catch {}
     if (clipSupported && lsGet(CLIP_KEY)) setClip(lsGet(CLIP_KEY));
     suggestFromClipboard();
-  })();
+  }
+  detectClip();
+  // tests/smoke.html stands in for the Mac app's handler, then asks for detection again through this event.
+  window.addEventListener("todos:native-clip-seam", detectClip);
 
   // ---------- list interactions ----------
   function onClick(e) {

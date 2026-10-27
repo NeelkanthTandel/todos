@@ -188,8 +188,8 @@ describe("limits", () => {
 });
 
 describe("CORS", () => {
-  it("allows the site and localhost, and answers preflights", async () => {
-    for (const origin of [SITE, "http://localhost:8080", "http://127.0.0.1:5500"]) {
+  it("allows the site, the Mac app and localhost, and answers preflights", async () => {
+    for (const origin of [SITE, "todos-app://app", "http://localhost:8080", "http://127.0.0.1:5500"]) {
       const res = await post("/c", { kind: "inbox" }, { origin });
       expect(res.status).toBe(201);
       expect(res.headers.get("Access-Control-Allow-Origin")).toBe(origin);
@@ -204,7 +204,7 @@ describe("CORS", () => {
   });
 
   it("refuses other origins", async () => {
-    for (const origin of ["https://evil.example", "https://todos.always17.com.evil.example", "http://localhost.evil.example", "null"]) {
+    for (const origin of ["https://evil.example", "https://todos.always17.com.evil.example", "http://localhost.evil.example", "todos-app://evil", "null"]) {
       const res = await post("/c", { kind: "inbox" }, { origin });
       expect(res.status).toBe(403);
       expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
