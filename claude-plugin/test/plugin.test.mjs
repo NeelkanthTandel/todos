@@ -1,6 +1,6 @@
 // node --test claude-plugin/test
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
@@ -351,5 +351,117 @@ test("hook: stops reading oversized input and quits promptly", async () => {
     assert.deepEqual([r.code, r.out, r.err], [0, "", ""]);
     assert.ok(r.ms < 1500, r.ms + " ms"); // gave up at the 1 MB cap, not at the 1.5 s read timeout
     assert.equal(relay.got.length, 0);
+  } finally { relay.close(); }
+});
+
+test("title: KEY=value after a prefix (MY_API_KEY=…) is caught, ordinary words aren't", () => {
+  for (const s of ["set MY_API_KEY=hunter22 please", "DB_PASS=hunter22 now", "SECRET_KEY=hunter22 now", "APP_SECRET=hunter22 now"]) {
+    assert.equal(L.titleFrom(s), null, s);
+  }
+  for (const s of ["the password reset flow", "token bucket rate limiter", "bypass=1 in the compass config"]) {
+    assert.equal(L.titleFrom(s), s, s);
+  }
+});
+
+test("title: long Chinese or Japanese lines (no spaces) keep a title", () => {
+  const ja = "ログイン画面でパスワードを入力した後にエラーが表示される問題を調査して修正してください。テストも追加して、既存のテストがすべて通ることを確認してください。";
+  const zh = "请帮我检查为什么导出按钮在列表很长的时候有时会下载一个空文件，并修复这个问题，同时添加一个测试来防止以后再出现这个问题，谢谢你的帮助";
+  assert.equal(L.titleFrom(ja), ja); // 77 characters, but one "token" to the filter
+  for (const p of [ja + ja, zh + zh]) {
+    const t = L.titleFrom(p);
+    assert.ok(t && t.length <= 80 && t.endsWith("…") && p.startsWith(t.slice(0, -1)), p);
+  }
+  assert.equal(L.titleFrom("修复登录错误"), "修复登录错误");
+});
+
+test("title and project name: control and bidi characters are removed", () => {
+  assert.equal(L.titleFrom("Fix ‮the⁦ login\u0007 bug\u001B[0m\u0085‏؜"), "Fix the login bug[0m");
+  assert.equal(L.titleFrom("⁧‪\u0000\nRename\tthe config⁩"), "Rename the config");
+  assert.equal(L.projectName("/x/my‮repo\u0007\n\t‎"), "myrepo");
+  assert.equal(L.projectName("/x/‮⁦"), "project");
+});
+
+test("hook: git worktrees count as their main repo for the name and .todos-ignore", async t => {
+  try { execFileSync("git", ["--version"], { stdio: "ignore" }); } catch { return t.skip("git isn't available"); }
+  const dir = tmpDir(), relay = await fakeRelay();
+  const main = fs.mkdtempSync(path.join(os.tmpdir(), "main-repo-"));
+  const genv = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1", HOME: dir };
+  const git = (...args) => execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@example.com", ...args], { cwd: main, env: genv, stdio: "ignore" });
+  git("init", "-q");
+  git("commit", "-q", "--allow-empty", "-m", "init");
+  const wt = path.join(main, ".claude", "worktrees", "brave-otter-x1");
+  git("worktree", "add", "-q", "-b", "brave-otter-x1", wt);
+  try {
+    assert.equal(fs.statSync(path.join(wt, ".git")).isFile(), true);
+    assert.equal(fs.realpathSync(L.projectRoot(path.join(wt))), fs.realpathSync(main));
+    const env = { TODOS_CONFIG_DIR: dir, TODOS_CONNECTION: L.encodeCode(conn(relay.url)) };
+    await run(HOOK, ["prompt"], { stdin: JSON.stringify({ session_id: "wt1", cwd: wt, prompt: "Fix it" }), env: { ...env, CLAUDE_PROJECT_DIR: wt } });
+    const [m] = await events(relay);
+    assert.deepEqual([m.event, m.project], ["suggest", path.basename(main)]);
+    // An ignore file in the main checkout covers its worktrees.
+    relay.got.length = 0;
+    fs.writeFileSync(path.join(main, ".todos-ignore"), "");
+    await run(HOOK, ["prompt"], { stdin: JSON.stringify({ session_id: "wt2", cwd: wt, prompt: "Fix it" }), env: { ...env, CLAUDE_PROJECT_DIR: wt } });
+    await run(HOOK, ["prompt"], { stdin: JSON.stringify({ session_id: "wt3", cwd: path.join(wt, "sub") }), env });
+    assert.equal(relay.got.length, 0);
+  } finally { relay.close(); }
+  // A .git file that isn't a readable worktree link falls back to the folder that holds it.
+  const odd = tmpDir();
+  for (const content of ["garbage", "gitdir: /nonexistent/x", "gitdir: " + main + "/.git"]) {
+    fs.writeFileSync(path.join(odd, ".git"), content);
+    assert.deepEqual(L.projectRoots(path.join(odd, "a", "b")), [odd], content);
+  }
+});
+
+test("hook: StopFailure (an API error) means it's your turn", async () => {
+  const dir = tmpDir(), relay = await fakeRelay();
+  try {
+    const env = { TODOS_CONFIG_DIR: dir, TODOS_CONNECTION: L.encodeCode(conn(relay.url)) };
+    const stdin = JSON.stringify({ session_id: "f", cwd: dir, hook_event_name: "StopFailure", error: "rate_limit", last_assistant_message: "API Error: Rate limit reached" });
+    const r = await run(HOOK, ["failure"], { stdin, env });
+    assert.deepEqual([r.code, r.out, r.err], [0, "", ""]);
+    assert.deepEqual((await events(relay)).map(m => m.event), ["your_turn"]);
+    const hooks = JSON.parse(fs.readFileSync(path.join(here, "../hooks/hooks.json"), "utf8")).hooks;
+    assert.match(hooks.StopFailure[0].hooks[0].command, /todos-hook\.mjs" failure$/);
+    assert.equal(hooks.StopFailure[0].hooks[0].async, true);
+  } finally { relay.close(); }
+});
+
+test("hook: an unwritable config folder still suggests (it just can't de-duplicate)", async t => {
+  if (process.platform === "win32" || process.getuid?.() === 0) return t.skip("permissions don't apply");
+  const dir = tmpDir(), relay = await fakeRelay();
+  fs.chmodSync(dir, 0o500);
+  try {
+    const env = { TODOS_CONFIG_DIR: dir, TODOS_CONNECTION: L.encodeCode(conn(relay.url)) };
+    const r = await run(HOOK, ["prompt"], { stdin: JSON.stringify({ session_id: "ro", cwd: os.tmpdir(), prompt: "Fix login" }), env });
+    assert.deepEqual([r.code, r.out, r.err], [0, "", ""]);
+    const [m] = await events(relay);
+    assert.deepEqual([m.event, m.title], ["suggest", "Fix login"]);
+    assert.equal(fs.existsSync(path.join(dir, "sessions")), false);
+  } finally { fs.chmodSync(dir, 0o700); relay.close(); }
+});
+
+test("connect command: the code is single-quoted, so the shell never expands it", async t => {
+  if (process.platform === "win32") return t.skip("needs sh");
+  const md = fs.readFileSync(path.join(here, "../commands/connect.md"), "utf8");
+  const line = /^!`(.*)`$/m.exec(md)[1];
+  assert.ok(line.endsWith(" '$ARGUMENTS'"), line);
+  const dir = tmpDir(), relay = await fakeRelay();
+  const pwned = path.join(dir, "pwned");
+  try {
+    // Claude Code pastes the argument text in place of $ARGUMENTS, then runs the line in a shell.
+    const sh = args => new Promise(resolve => {
+      const p = spawn("sh", ["-c", line.replace("$ARGUMENTS", () => args)], {
+        cwd: dir, env: { ...process.env, CLAUDE_PLUGIN_ROOT: path.join(here, ".."), TODOS_CONFIG_DIR: dir, TODOS_CONNECTION: "" },
+      });
+      let out = "";
+      p.stdout.on("data", d => { out += d; });
+      p.on("close", () => resolve(out));
+    });
+    for (const evil of ["$(touch " + pwned + ")", "`touch " + pwned + "`", "\"; touch " + pwned + "; \"", "${HOME}"]) {
+      assert.match(await sh(evil), /isn't a Todos pairing code/, evil);
+    }
+    assert.equal(fs.existsSync(pwned), false);
+    assert.match(await sh(L.encodeCode(conn(relay.url))), /^Connected to your Todos board/);
   } finally { relay.close(); }
 });

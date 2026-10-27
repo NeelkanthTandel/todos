@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// One script for every hook event: node todos-hook.mjs <start|prompt|notification|stop|end>
+// One script for every hook event: node todos-hook.mjs <start|prompt|notification|stop|failure|end>
 // Sends one encrypted message to your Todos inbox. It must never slow down or break a Claude Code session:
 // it runs as an async hook, gives up after a few seconds, swallows every error, always exits 0 and never
 // prints (some hook output is fed back to Claude).
@@ -11,7 +11,8 @@ process.on("uncaughtException", () => process.exit(0));
 process.on("unhandledRejection", () => process.exit(0));
 setTimeout(() => process.exit(0), 4000).unref();
 
-const EVENTS = { start: "start", prompt: null, notification: "needs_you", stop: "your_turn", end: "ended" };
+// failure is StopFailure: the turn ended on an API error (rate limit, auth…) instead of Stop, so it's your turn too.
+const EVENTS = { start: "start", prompt: null, notification: "needs_you", stop: "your_turn", failure: "your_turn", end: "ended" };
 // Notifications that mean Claude is waiting on you. idle_prompt, auth_success, agent_completed and the rest don't.
 const NEEDS_YOU = new Set(["permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input"]);
 const SESSION_RE = /^[\w-]{1,64}$/;
@@ -39,7 +40,7 @@ async function main() {
   // claude -p and Agent SDK runs (entrypoint sdk-cli, sdk-ts, sdk-py) are scripts, not sessions you'd pick up.
   // The variable isn't in Claude Code's docs, so TODOS_SDK=1 turns this off if an SDK-based app needs it.
   if (/^sdk-/.test(process.env.CLAUDE_CODE_ENTRYPOINT || "") && process.env.TODOS_SDK !== "1") return;
-  const { loadConnection, projectRoot, projectName, titleFrom, send, configDir } = await import("./lib.mjs");
+  const { loadConnection, projectRoots, projectName, titleFrom, send, configDir } = await import("./lib.mjs");
   const fs = await import("node:fs");
   const path = await import("node:path");
 
@@ -54,23 +55,24 @@ async function main() {
   // The folder the session started in: input.cwd follows Claude's cd, CLAUDE_PROJECT_DIR stays put.
   const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : "";
   const base = process.env.CLAUDE_PROJECT_DIR || cwd || process.cwd();
-  const root = projectRoot(base);
+  const roots = projectRoots(base), root = roots.at(-1);
 
   // One small marker file per session id: it exists once the session has been suggested, and says "ignored"
   // for a session that started in an ignored project, so it stays ignored after a cd elsewhere.
   const dir = path.join(configDir(), "sessions");
   const marker = path.join(dir, sessionId);
+  // Returns the error code on failure: only EEXIST means "already there".
   const mark = (content, flag) => {
     try {
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
       fs.writeFileSync(marker, content, { mode: 0o600, flag });
-      return true;
-    } catch { return false; }
+      return null;
+    } catch (e) { return e && e.code || "error"; }
   };
   let seen = null;
   try { seen = fs.readFileSync(marker, "utf8"); } catch {}
   if (seen === "ignored") return;
-  const ignored = [root, base, ...(cwd ? [projectRoot(cwd), cwd] : [])]
+  const ignored = [...roots, base, ...(cwd ? [...projectRoots(cwd), cwd] : [])]
     .some(d => fs.existsSync(path.join(d, ".todos-ignore")));
   if (ignored) { mark("ignored", "w"); return; }
 
@@ -78,7 +80,8 @@ async function main() {
   if (which === "prompt") {
     const prompt = typeof input.prompt === "string" ? input.prompt : "";
     if (/^\s*\/todos:/.test(prompt)) return; // connecting or disconnecting isn't a task (and holds the pairing code)
-    if (mark("", "wx")) { msg.event = "suggest"; msg.title = titleFrom(prompt); }
+    // A config dir we can't write to can't de-duplicate: better a repeated suggestion than none.
+    if (mark("", "wx") !== "EEXIST") { msg.event = "suggest"; msg.title = titleFrom(prompt); }
     else {
       msg.event = "running";
       try { const t = new Date(); fs.utimesSync(marker, t, t); } catch {} // still active: keep it out of the sweep

@@ -109,25 +109,46 @@ export async function send(conn, message, { timeout = 2500, retries = 1 } = {}) 
 }
 
 // ---------- what gets sent ----------
-// The git repo's folder name, or the working folder's name. Never the full path.
-export function projectRoot(cwd) {
+// The folder holding .git (or the working folder), then, for a git worktree, the main checkout it belongs to:
+// .todos-ignore is checked in each, and the last one names the project. Never sent as a full path.
+export function projectRoots(cwd) {
   let dir = path.resolve(cwd);
   for (let i = 0; i < 40; i++) {
-    if (fs.existsSync(path.join(dir, ".git"))) return dir;
+    const git = path.join(dir, ".git");
+    if (fs.existsSync(git)) {
+      const main = mainCheckout(git);
+      return main && main !== dir ? [dir, main] : [dir];
+    }
     const up = path.dirname(dir);
     if (up === dir) break;
     dir = up;
   }
-  return path.resolve(cwd);
+  return [path.resolve(cwd)];
 }
-export const projectName = root => (path.basename(root) || "project").slice(0, 120);
+export const projectRoot = cwd => projectRoots(cwd).at(-1);
+// In a worktree .git is a file, "gitdir: <main>/.git/worktrees/<name>", and that folder's commondir file points
+// back to <main>/.git. null for anything else (a normal repo, a submodule, a bare repo, unreadable files).
+function mainCheckout(git) {
+  try {
+    if (!fs.statSync(git).isFile()) return null;
+    const m = /^gitdir:[ \t]*(.+?)[ \t]*$/m.exec(fs.readFileSync(git, "utf8").slice(0, 4096));
+    if (!m) return null;
+    const gitdir = path.resolve(path.dirname(git), m[1]);
+    const common = path.resolve(gitdir, fs.readFileSync(path.join(gitdir, "commondir"), "utf8").slice(0, 4096).trim());
+    if (path.basename(common) !== ".git" || !fs.statSync(common).isDirectory()) return null;
+    return path.dirname(common);
+  } catch { return null; }
+}
+// Controls and bidi overrides could garble or disguise text on the board.
+const CONTROLS = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g;
+export const projectName = root => (path.basename(root).replace(/[\t\n]/g, "").replace(CONTROLS, "") || "project").slice(0, 120);
 
 const KEEP_OUT = new Set(["secret pattern", "card number", "random token"]);
 // First meaningful line of the prompt, without Markdown or code, at most 80 characters. null when there's
 // nothing usable or it looks like it contains a secret (the board then shows "Untitled session in <project>").
 export function titleFrom(prompt) {
   if (typeof prompt !== "string") return null;
-  const text = prompt.slice(0, 20000).replace(/\r\n?/g, "\n")
+  const text = prompt.slice(0, 20000).replace(/\r\n?/g, "\n").replace(CONTROLS, "")
     .replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[^\n]*$|(?![\s\S]))/gm, "\n"); // fenced code blocks
   for (const raw of text.split("\n")) {
     if (/^( {4}|\t)/.test(raw)) continue; // indented code
@@ -152,7 +173,9 @@ export function titleFrom(prompt) {
       const cut = title.slice(0, 79), space = cut.lastIndexOf(" ");
       title = (space > 50 ? cut.slice(0, space) : cut).replace(/[\s,;:.-]+$/, "") + "…";
     }
-    return secretCheck(title).ok ? title : null;
+    // Only a secret counts here too: a long line without spaces (Chinese, Japanese) is a "single token" once cut.
+    const last = secretCheck(title);
+    return last.ok || !KEEP_OUT.has(last.reason) ? title : null;
   }
   return null;
 }
