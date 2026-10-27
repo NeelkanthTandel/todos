@@ -70,10 +70,17 @@
         headers: Object.assign(body ? { "Content-Type": "application/json" } : {}, token ? { Authorization: "Bearer " + token } : {}),
         body: body ? JSON.stringify(body) : undefined,
       });
-      if (!res.ok) throw Object.assign(new Error("HTTP " + res.status), { status: res.status });
+      if (!res.ok) {
+        let body = null;
+        try { body = await res.json(); } catch {}
+        throw Object.assign(new Error("HTTP " + res.status), { status: res.status, body });
+      }
       return res.status === 204 ? null : res.json();
     }
     const ch = c => "/c/" + encodeURIComponent(c.id);
+    // A channel is { id, ownerToken } for its owner, { id, token } for a paired device, or just { id } for a
+    // share viewer (share channels are readable by anyone with the id; the key in the link keeps them private).
+    const tokenOf = c => c.token || c.ownerToken || null;
     return {
       base,
       create: kind => req("POST", "/c", null, { kind }),
@@ -81,16 +88,35 @@
       listWriters: c => req("GET", ch(c) + "/writers", c.ownerToken),
       revokeWriter: (c, wid) => req("DELETE", ch(c) + "/writers/" + encodeURIComponent(wid), c.ownerToken),
       deleteMessage: (c, mid) => req("DELETE", ch(c) + "/messages/" + encodeURIComponent(mid), c.ownerToken),
+      remove: c => req("DELETE", ch(c), c.ownerToken),
+      // share and sync: { kind, version, data } (data is null until the first write).
+      getState: c => req("GET", ch(c), tokenOf(c)),
+      // Replaces the state; with a version, only if it's still the current one (otherwise a 409 whose
+      // error carries body.version).
+      async putState(c, data, version) {
+        const res = await doFetch(base + ch(c) + "/state", {
+          method: "PUT", cache: "no-store", credentials: "omit",
+          headers: Object.assign({ "Content-Type": "application/json", Authorization: "Bearer " + tokenOf(c) },
+            version === undefined || version === null ? {} : { "If-Match": String(version) }),
+          body: JSON.stringify({ data }),
+        });
+        let body = null;
+        try { body = await res.json(); } catch {}
+        if (!res.ok) throw Object.assign(new Error("HTTP " + res.status), { status: res.status, body });
+        return body;
+      },
 
       // Follows a channel while the page is open. Reconnects with backoff, and straight away when the tab
-      // comes back into view or the network returns. onEvent gets each parsed relay message.
+      // comes back into view or the network returns. onEvent gets each parsed relay message; onStatus gets
+      // "open", or "closed" with the close code (4001: this device's token was revoked).
       subscribe(c, onEvent, onStatus = () => {}) {
         const url = base.replace(/^http/, "ws") + ch(c);
         let ws = null, closed = false, tries = 0, timer = null, ping = null;
         function open() {
           if (closed || ws) return;
           let sock;
-          try { sock = new WS(url, ["todos", "bearer." + c.ownerToken]); } catch { retry(); return; }
+          const token = tokenOf(c);
+          try { sock = new WS(url, token ? ["todos", "bearer." + token] : ["todos"]); } catch { retry(); return; }
           ws = sock;
           sock.onopen = () => {
             tries = 0; onStatus("open");
@@ -102,10 +128,10 @@
             try { msg = JSON.parse(e.data); } catch { return; } // "pong" and anything else that isn't JSON
             if (msg && typeof msg === "object") onEvent(msg);
           };
-          sock.onclose = () => {
+          sock.onclose = e => {
             if (ws !== sock) return;
             ws = null; clearInterval(ping);
-            onStatus("closed");
+            onStatus("closed", e && e.code);
             retry();
           };
         }

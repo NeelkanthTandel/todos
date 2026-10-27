@@ -434,3 +434,75 @@ kbd {
 .machines .machine { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .machines small { color: var(--muted); }
 .dialog-acts { display: flex; justify-content: flex-end; margin-top: 12px; }
+
+/* Live sharing. A shared board you're viewing gets a colour nothing else uses (violet): a banner that can't be
+   closed, a tinted frame round the whole page, and no composer, grips, checkboxes or row actions but Add to mine. */
+:root { --view: #7c3aed; --view-soft: #f1eafe; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --view: #b794f6; --view-soft: #2a2140; } }
+:root[data-theme="dark"] { --view: #b794f6; --view-soft: #2a2140; }
+.viewing body { background: color-mix(in srgb, var(--view) 7%, var(--paper)); box-shadow: inset 0 0 0 4px var(--view); }
+.viewbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; padding: 9px 10px 9px 16px; border-radius: 12px;
+  background: var(--view); color: #fff; font-size: 14px;
+}
+.viewbar p { flex: 1 1 320px; margin: 0; }
+.viewbar b { font-weight: 700; }
+.viewbar[data-status="offline"], .viewbar[data-status="stopped"] { background: color-mix(in srgb, var(--view) 60%, var(--muted)); }
+.viewbar-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.view-btn {
+  border: 1px solid rgb(255 255 255 / .55); background: transparent; color: #fff; cursor: pointer;
+  border-radius: 8px; font-size: 13px; font-weight: 600; padding: 5px 11px;
+}
+.view-btn:hover { background: rgb(255 255 255 / .14); }
+.view-btn.solid { background: #fff; color: var(--view); border-color: #fff; }
+.view-btn:disabled { opacity: .5; cursor: default; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .viewbar, :root:not([data-theme="light"]) .view-btn { color: #17112a; } }
+:root[data-theme="dark"] .viewbar, :root[data-theme="dark"] .view-btn { color: #17112a; }
+.viewing .composer, .viewing .multi, .viewing .clip-offer, .viewing .tray, .viewing .keys > span:not(.status, .view-keys),
+.viewing .keys .clip-toggle:not(.share-on), .viewing #clearDone { display: none; }
+.viewing .lane { border-color: color-mix(in srgb, var(--view) 30%, var(--rule)); }
+.viewing .items li { cursor: default; }
+.viewing .text { cursor: text; user-select: text; }
+.viewing .check { cursor: default; }
+.viewing .check:hover { border-color: color-mix(in srgb, var(--heat) 70%, var(--muted)); background: transparent; }
+.viewing li.done .check:hover { background: var(--pen); border-color: var(--pen); }
+.act.copy { color: var(--view); }
+.act.copy:hover { background: var(--view-soft); color: var(--view); }
+.view-keys { display: inline-flex; align-items: center; gap: 5px; }
+
+/* The board switcher in the heading (only once you have a shared board) */
+.switch {
+  display: inline-flex; align-items: center; gap: 6px; border: 0; background: none; cursor: pointer; padding: 0 6px 0 0;
+  margin: 0; font: inherit; font-size: inherit; font-weight: inherit; letter-spacing: inherit; color: inherit; border-radius: 6px;
+}
+.switch svg { width: 14px; height: 14px; color: var(--muted); }
+.switch:hover svg { color: var(--ink); }
+.viewing .switch { color: var(--view); }
+
+/* Share dialogs */
+.dialog .field { display: block; font-weight: 600; font-size: 13.5px; margin: 12px 0 4px; }
+.text-field {
+  width: 100%; font: inherit; color: var(--ink); background: var(--paper); border: 1px solid var(--rule-strong);
+  border-radius: 8px; padding: 7px 10px;
+}
+.text-field:focus { outline: 2px solid var(--pen); outline-offset: 0; }
+.opts { border: 0; margin: 12px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.opts legend { font-weight: 600; font-size: 13.5px; padding: 0; margin-bottom: 4px; width: 100%; }
+.opts label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
+.dialog .warn { margin: 14px 0 10px; padding: 8px 10px; border-radius: 8px; background: var(--pen-soft); font-size: 13px; }
+.dialog-acts { gap: 6px; }
+.shares li { flex-wrap: wrap; gap: 2px 6px; }
+.shares .machine small { display: block; }
+.shares button.confirm { color: var(--danger); }
+.keys .share-on { color: var(--pen); font-weight: 600; }
+
+/* Device sync */
+.dialog .dialog-acts.start { justify-content: flex-start; margin: 4px 0 6px; }
+.dialog .cmd .text-field { flex: 1; min-width: 0; background: var(--sheet); }
+.qr { width: min(280px, 100%); margin: 8px 0; border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
+.qr svg { display: block; width: 100%; height: auto; }
+.ghost-btn.danger:hover { color: var(--danger); }
+.dialog .dialog-acts { align-items: center; }
+#syncOffBtn { margin-right: auto; }
+.dialog .warn p { margin: 0 0 6px; }
+.dialog .warn label { display: flex; gap: 6px; align-items: center; font-weight: 600; }
