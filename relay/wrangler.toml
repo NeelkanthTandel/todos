@@ -10,8 +10,9 @@ enabled = false
 
 [vars]
 # Exact origins allowed to call the relay from a browser (comma-separated). http://localhost:* and
-# http://127.0.0.1:* are always allowed for local development.
-ALLOWED_ORIGINS = "https://todos.always17.com"
+# http://127.0.0.1:* are always allowed for local development. todos-app://app is the Mac app (mac/), which
+# serves the same page from its bundle.
+ALLOWED_ORIGINS = "https://todos.always17.com,todos-app://app"
 
 [[durable_objects.bindings]]
 name = "CHANNEL"

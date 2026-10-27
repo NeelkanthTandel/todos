@@ -82,6 +82,6 @@ Errors are `{ error }` with `400` (bad request), `401` (missing or wrong token),
 ## Security
 
 - Tokens are 256-bit random values. The relay keeps only their SHA-256 hashes.
-- Browsers can call it only from `ALLOWED_ORIGINS` (`https://todos.always17.com`) and localhost; other origins get `403`. Requests without an `Origin` (the Claude Code hook, curl) are fine, since they rely on tokens, not cookies.
+- Browsers can call it only from `ALLOWED_ORIGINS` (`https://todos.always17.com` and the Mac app's `todos-app://app`) and localhost; other origins get `403`. Requests without an `Origin` (the Claude Code hook, curl) are fine, since they rely on tokens, not cookies.
 - The relay never logs request bodies, and Workers Logs are off (`[observability] enabled = false`).
 - What it can see: channel ids, IP addresses, when requests happen and how big they are. What it can't: titles, todos, project names, session status. See [SECURITY.md](../SECURITY.md).
