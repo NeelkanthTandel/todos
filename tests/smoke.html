@@ -244,6 +244,28 @@
       check("nothing is suggested once turned off", box.value === "" && localStorage.getItem("todos.clip") === "off");
     }
 
+    // ---------- clipboard suggestions in the Mac app (its native handler, stubbed; runs in any browser) ----------
+    for (const k of Object.keys(localStorage)) if (k.startsWith("todos.")) localStorage.removeItem(k);
+    await load(); await sleep(100);
+    {
+      let nativeText = "Renew the passport", asked = 0;
+      win().webkit = { messageHandlers: { todosClipboard: { postMessage: async msg => { asked++; return msg === "read" ? nativeText : null; } } } };
+      localStorage.setItem("todos.clip", "on");
+      let done = false;
+      win().addEventListener("todos:clipcheck", () => { done = true; }, { once: true });
+      win().dispatchEvent(new (win().Event)("todos:native-clip-seam"));
+      await waitFor(() => done);
+      check("Mac app: suggests text from the native pasteboard", $("new").value === "Renew the passport" && shown($("clipNote")) &&
+        shown($("clipToggle")) && asked > 0, JSON.stringify([$("new").value, asked]));
+      $("new").dispatchEvent(new (win().KeyboardEvent)("keydown", { key: "Escape", bubbles: true }));
+      nativeText = null; // the app answers nothing while it's in the background or the copy is concealed
+      done = false;
+      win().addEventListener("todos:clipcheck", () => { done = true; }, { once: true });
+      win().dispatchEvent(new (win().Event)("focus"));
+      await waitFor(() => done);
+      check("Mac app: an empty native answer suggests nothing", $("new").value === "" && !shown($("clipNote")));
+    }
+
     // ---------- Claude Code sessions, through a fake relay (the todos:relay-seam test seam) ----------
     for (const k of Object.keys(localStorage)) if (k.startsWith("todos.")) localStorage.removeItem(k);
     // Shared with claude-plugin/test/plugin.test.mjs: key = bytes 0..31; the vector was encrypted by the plugin.
