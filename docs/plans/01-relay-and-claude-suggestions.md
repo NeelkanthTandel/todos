@@ -77,7 +77,7 @@ claude-plugin/
   | `Stop` | `{ event: "your_turn" }` |
   | `SessionEnd` | `{ event: "ended" }` |
 
-  Every message also carries `sessionId`, `project` (the git repo name, or the folder's basename; never the full path), `kind` (`"cloud"` when running in a Claude Code cloud session, else `"local"`) and `at` (epoch ms). Track "first prompt in this session" with a small state file per session id under `~/.config/todos/sessions/`, and clean these up on `SessionEnd`.
+  Every message also carries `sessionId`, `project` (the git repo name, or the folder's basename; never the full path), `kind` (`"cloud"` when running in a Claude Code cloud session, else `"local"`) and `at` (epoch ms). Track "first prompt in this session" with a small state file per session id under `~/.config/todos/sessions/`, and keep them after `SessionEnd` (a resumed session keeps its id) until a weekly sweep, except after `/clear`.
 - **The title:**
   - take the first prompt's first meaningful line, strip Markdown and code fences, collapse whitespace, cut to 80 characters;
   - run it through the same secret filter the website uses (`public/clipboard.js`; make that file usable from Node, e.g. also assign `globalThis.TodoClipboard` and add a tiny ESM wrapper, without breaking the browser);
