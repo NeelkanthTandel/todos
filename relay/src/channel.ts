@@ -11,6 +11,7 @@ export const LIMITS = {
   state: 256 * 1024,       // characters of `data` in a state blob
   message: 16 * 1024,      // characters of `data` in an inbox message
   messages: 500,           // inbox size; the oldest are dropped
+  writers: 50,             // paired machines or devices per channel
   burst: 5,                // writes allowed at once…
   perSecond: 2,            // …refilling at this rate (per channel)
   ttl: 90 * 864e5,         // a channel unused this long deletes itself
@@ -75,18 +76,20 @@ function bearer(req: Request): string | null {
 
 export class Channel extends DurableObject<Env> {
   private sql: SqlStorage;
+  private ready = false; // the tables exist (made by init, gone after destroy)
   private tokens = LIMITS.burst;
   private refilledAt = Date.now();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
-    this.schema();
+    // No schema here: any GET to a made-up id builds an instance, and it mustn't leave a database behind.
     // Keepalive pings are answered without waking the object.
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair("ping", "pong"));
   }
 
   private schema() {
+    this.ready = true;
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v);
       CREATE TABLE IF NOT EXISTS writers (wid TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE, created INTEGER NOT NULL, used INTEGER);
@@ -94,7 +97,13 @@ export class Channel extends DurableObject<Env> {
     `);
   }
 
+  // Tables exist only for a live channel. Checking is a read, so a lookup of an unknown id writes nothing.
+  private hasTables(): boolean {
+    if (!this.ready) this.ready = this.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meta'").toArray().length > 0;
+    return this.ready;
+  }
   private get(k: string): any {
+    if (!this.hasTables()) return null;
     const rows = this.sql.exec("SELECT v FROM meta WHERE k = ?", k).toArray();
     return rows.length ? rows[0].v : null;
   }
@@ -106,9 +115,18 @@ export class Channel extends DurableObject<Env> {
     const token = bearer(req);
     if (!token || token.length > 128) return null;
     const hash = await sha256(token);
+    if (!this.get("kind")) return null; // deleted while we hashed
     if (hash === this.get("owner")) return { owner: true };
     const w = this.sql.exec("SELECT wid FROM writers WHERE hash = ?", hash).toArray()[0];
     return w ? { owner: false, wid: String(w.wid) } : null;
+  }
+
+  // A slow body upload is a gap other requests can use: re-check that the channel is still there and the
+  // writer still paired before writing. Everything after this is synchronous, so nothing can slip in.
+  private gone(role: Role): Response | null {
+    if (!this.get("kind")) return fail(404, "no such channel");
+    if (role && !role.owner && !this.sql.exec("SELECT 1 FROM writers WHERE wid = ?", role.wid).toArray().length) return fail(401, "missing or wrong token");
+    return null;
   }
 
   // Remember when the channel was last used, and make sure the expiry alarm is set.
@@ -149,7 +167,7 @@ export class Channel extends DurableObject<Env> {
     }
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
-    this.schema(); // this instance may keep serving requests (all of them 404 now)
+    this.ready = false; // this instance may keep serving requests (all of them 404 now, without writing)
   }
 
   async fetch(req: Request): Promise<Response> {
@@ -159,6 +177,7 @@ export class Channel extends DurableObject<Env> {
     if (rest[0] === "init" && m === "POST") {
       if (this.get("kind")) return fail(409, "channel exists");
       const { kind } = await req.json<{ kind: Kind }>();
+      this.schema();
       const ownerToken = randomId(32);
       this.set("kind", kind);
       this.set("owner", await sha256(ownerToken));
@@ -168,9 +187,9 @@ export class Channel extends DurableObject<Env> {
       return json({ id, kind, ownerToken }, 201);
     }
 
-    const kind = this.get("kind") as Kind | null;
-    if (!kind) return fail(404, "no such channel");
     const role = await this.role(req);
+    const kind = this.get("kind") as Kind | null; // read after hashing: a DELETE may have landed meanwhile
+    if (!kind) return fail(404, "no such channel");
     const isOwner = !!role?.owner;
     const canWrite = !!role; // owner or a paired writer
     const canRead = kind === "share" || (kind === "inbox" ? isOwner : canWrite);
@@ -200,6 +219,8 @@ export class Channel extends DurableObject<Env> {
       if (kind === "share" ? !isOwner : !canWrite) return fail(401, "missing or wrong token");
       const data = await readData(req, LIMITS.state);
       if (data instanceof Response) return data;
+      const lost = this.gone(role);
+      if (lost) return lost;
       const current = Number(this.get("version")) || 0;
       const ifMatch = req.headers.get("If-Match");
       if (ifMatch !== null && ifMatch.replace(/"/g, "").trim() !== String(current)) return json({ error: "version conflict", version: current }, 409);
@@ -217,6 +238,8 @@ export class Channel extends DurableObject<Env> {
       if (!role || role.owner) return fail(401, "missing or wrong token");
       const data = await readData(req, LIMITS.message);
       if (data instanceof Response) return data;
+      const lost = this.gone(role);
+      if (lost) return lost;
       if (!this.allowWrite()) return fail(429, "too many writes, slow down");
       const mid = randomId(9), at = Date.now();
       this.sql.exec("INSERT INTO messages (id, data, at, wid) VALUES (?, ?, ?, ?)", mid, data, at, role.wid);
@@ -228,7 +251,8 @@ export class Channel extends DurableObject<Env> {
     // DELETE /c/:id/messages/:mid (inbox: owner)
     if (rest[0] === "messages" && rest.length === 2 && m === "DELETE") {
       if (!isOwner) return fail(401, "missing or wrong token");
-      this.sql.exec("DELETE FROM messages WHERE id = ?", rest[1]);
+      // Tell the board's other tabs, so a message handled in one disappears from all of them.
+      if (this.sql.exec("DELETE FROM messages WHERE id = ?", rest[1]).rowsWritten) this.broadcast({ type: "removed", id: rest[1] }, "reader");
       return new Response(null, { status: 204 });
     }
 
@@ -237,8 +261,12 @@ export class Channel extends DurableObject<Env> {
       if (!isOwner) return fail(401, "missing or wrong token");
       if (kind === "share") return fail(400, "share channels have no writers");
       if (rest.length === 1 && m === "POST") {
-        const wid = randomId(6), token = randomId(32), created = Date.now();
-        this.sql.exec("INSERT INTO writers (wid, hash, created) VALUES (?, ?, ?)", wid, await sha256(token), created);
+        const wid = randomId(6), token = randomId(32), hash = await sha256(token), created = Date.now();
+        // Checked after the await so concurrent pairings can't overshoot the cap or write into a deleted channel.
+        if (!this.get("kind")) return fail(404, "no such channel");
+        if (Number(this.sql.exec("SELECT count(*) AS n FROM writers").one().n) >= LIMITS.writers) return fail(409, "too many paired devices; unlink one first");
+        if (!this.allowWrite()) return fail(429, "too many writes, slow down");
+        this.sql.exec("INSERT INTO writers (wid, hash, created) VALUES (?, ?, ?)", wid, hash, created);
         return json({ wid, token, created }, 201);
       }
       if (rest.length === 1 && m === "GET") {

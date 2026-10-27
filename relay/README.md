@@ -61,27 +61,29 @@ Tokens go in `Authorization: Bearer <token>`. A browser can't set headers on a W
 | `GET /c/:id` with `Upgrade: websocket` | same | Sends what's there now, then every change (see below) |
 | `PUT /c/:id/state` `{ data }`, optional `If-Match: <version>` | `share`: owner. `sync`: owner or writer | Replaces the state. `200 { version }`, or `409 { version }` if `If-Match` is stale |
 | `POST /c/:id/messages` `{ data }` | `inbox` writers | Appends a message. `201 { id }` |
-| `DELETE /c/:id/messages/:mid` | owner | Removes a handled message. `204` |
-| `POST /c/:id/writers` | owner (`inbox`, `sync`) | Pairs a machine or device. `201 { wid, token, created }` |
+| `DELETE /c/:id/messages/:mid` | owner | Removes a handled message, and tells the owner's open sockets. `204` |
+| `POST /c/:id/writers` | owner (`inbox`, `sync`) | Pairs a machine or device. `201 { wid, token, created }`, or `409` at 50 |
 | `GET /c/:id/writers` | owner | `{ writers: [{ wid, created, used }] }` (`used`: an inbox writer's last message, or a sync device's last request; `null` until then) |
 | `DELETE /c/:id/writers/:wid` | owner | Revokes it, and closes its open sockets. `204` |
 | `DELETE /c/:id` | owner | Deletes the channel. Open sockets get `{ "type": "deleted" }`. `204` |
 
-WebSocket messages from the relay: `{ type: "message", id, data, at, wid }`, `{ type: "state", version, data }` and `{ type: "deleted" }`. Send `ping` to keep a socket alive; the relay answers `pong` without waking up.
+WebSocket messages from the relay: `{ type: "message", id, data, at, wid }`, `{ type: "removed", id }` (an inbox message was deleted, maybe from another tab), `{ type: "state", version, data }` and `{ type: "deleted" }`. Send `ping` to keep a socket alive; the relay answers `pong` without waking up.
 
-Errors are `{ error }` with `400` (bad request), `401` (missing or wrong token), `403` (origin not allowed), `404` (no such channel), `409` (version conflict), `413` (too large) or `429` (too fast).
+Errors are `{ error }` with `400` (bad request), `401` (missing or wrong token), `403` (origin not allowed), `404` (no such channel), `409` (version conflict, or too many paired devices), `413` (too large) or `429` (too fast).
 
 ## Limits
 
 - State up to 256 KB of `data`; a message up to 16 KB.
 - An inbox keeps the newest 500 messages; older ones are dropped.
-- Writes (`PUT state`, `POST messages`): bursts of 5, then 2 a second per channel.
+- Writes (`PUT state`, `POST messages`, `POST writers`): bursts of 5, then 2 a second per channel.
+- Up to 50 paired machines or devices per channel.
 - 10 new channels a minute per IP address.
+- Anonymous reads and WebSockets on `share` channels aren't throttled beyond Cloudflare's own limits.
 - A channel nobody has used for 90 days deletes itself (Durable Object alarm).
 
 ## Security
 
 - Tokens are 256-bit random values. The relay keeps only their SHA-256 hashes.
-- Browsers can call it only from `ALLOWED_ORIGINS` (`https://todos.always17.com`) and localhost; other origins get `403`. Requests without an `Origin` (the Claude Code hook, curl) are fine, since they rely on tokens, not cookies.
+- Browsers can call it only from `ALLOWED_ORIGINS` (`https://todos.always17.com`, and `todos-app://app` for the Mac app's web view) and localhost; other origins get `403`. Requests without an `Origin` (the Claude Code hook, curl) are fine, since they rely on tokens, not cookies.
 - The relay never logs request bodies, and Workers Logs are off (`[observability] enabled = false`).
 - What it can see: channel ids, IP addresses, when requests happen and how big they are. What it can't: titles, todos, project names, session status. See [SECURITY.md](../SECURITY.md).

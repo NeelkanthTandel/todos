@@ -43,6 +43,19 @@ async function socket(id: string, token?: string) {
 }
 const until = async (cond: () => boolean) => { for (let i = 0; i < 200 && !cond(); i++) await new Promise(r => setTimeout(r, 5)); return cond(); };
 const data = (n = 40) => "A".repeat(n);
+const stubOf = (id: string) => env.CHANNEL.get(env.CHANNEL.idFromName(id));
+// Sends a body that stalls after its first bytes until finish(), like a slow upload.
+function slow(method: string, path: string, token: string, body: unknown) {
+  let ctl!: ReadableStreamDefaultController<Uint8Array>;
+  const bytes = new TextEncoder().encode(JSON.stringify(body));
+  const stream = new ReadableStream<Uint8Array>({ start(c) { ctl = c; c.enqueue(bytes.slice(0, 5)); } });
+  const headers = { Authorization: "Bearer " + token, "CF-Connecting-IP": "10.0.1." + ++ipSeq };
+  const res = exports.default.fetch(new Request(BASE + path, { method, body: stream, headers, duplex: "half" } as RequestInit));
+  return { res, finish: () => { ctl.enqueue(bytes.slice(5)); ctl.close(); } };
+}
+const settle = () => new Promise(r => setTimeout(r, 30));
+// Tables the Channel made (the runtime keeps its own _cf_* ones).
+const tables = (sql: SqlStorage) => sql.exec("SELECT name FROM sqlite_master WHERE type = 'table'").toArray().map(r => String(r.name)).filter(n => !n.startsWith("_cf_"));
 
 describe("inbox", () => {
   it("creates, pairs a writer, takes a message and returns it to the owner", async () => {
@@ -62,6 +75,17 @@ describe("inbox", () => {
 
     expect((await call("/c/" + ch.id + "/messages/" + mid, { method: "DELETE", token: ch.ownerToken })).status).toBe(204);
     expect((await (await call("/c/" + ch.id, { token: ch.ownerToken })).json<any>()).messages).toHaveLength(0);
+  });
+
+  it("caps paired writers at 50", async () => {
+    const ch = await create("inbox");
+    await runInDurableObject(stubOf(ch.id), async (_o, state) => {
+      for (let i = 0; i < LIMITS.writers - 1; i++) state.storage.sql.exec("INSERT INTO writers (wid, hash, created) VALUES (?, ?, 0)", "w" + i, "h" + i);
+    });
+    await mint(ch.id, ch.ownerToken);
+    const over = await call("/c/" + ch.id + "/writers", { method: "POST", token: ch.ownerToken });
+    expect(over.status).toBe(409);
+    expect(await over.json()).toEqual({ error: "too many paired devices; unlink one first" });
   });
 
   it("lists writers with when they were last used", async () => {
@@ -156,6 +180,40 @@ describe("auth", () => {
     expect((await put("/c/" + ch.id + "/state", { data: "BBB" }, { token: b.token, headers: { "If-Match": '"1"' } })).status).toBe(200);
   });
 
+  it("a writer revoked during a slow upload doesn't get its write in", async () => {
+    const sy = await create("sync"), sw = await mint(sy.id, sy.ownerToken);
+    const inb = await create("inbox"), iw = await mint(inb.id, inb.ownerToken);
+    const put = slow("PUT", "/c/" + sy.id + "/state", sw.token, { data: "EVIL" });
+    const msg = slow("POST", "/c/" + inb.id + "/messages", iw.token, { data: "EVIL" });
+    await settle();
+    expect((await call("/c/" + sy.id + "/writers/" + sw.wid, { method: "DELETE", token: sy.ownerToken })).status).toBe(204);
+    expect((await call("/c/" + inb.id + "/writers/" + iw.wid, { method: "DELETE", token: inb.ownerToken })).status).toBe(204);
+    put.finish(); msg.finish();
+    expect((await put.res).status).toBe(401);
+    expect((await msg.res).status).toBe(401);
+    expect(await (await call("/c/" + sy.id, { token: sy.ownerToken })).json()).toEqual({ kind: "sync", version: 0, data: null });
+    expect((await (await call("/c/" + inb.id, { token: inb.ownerToken })).json<any>()).messages).toHaveLength(0);
+  });
+
+  it("a channel deleted during a slow upload stays deleted", async () => {
+    const sy = await create("sync");
+    const inb = await create("inbox"), iw = await mint(inb.id, inb.ownerToken);
+    const put = slow("PUT", "/c/" + sy.id + "/state", sy.ownerToken, { data: "LATE" });
+    const msg = slow("POST", "/c/" + inb.id + "/messages", iw.token, { data: "LATE" });
+    await settle();
+    expect((await call("/c/" + sy.id, { method: "DELETE", token: sy.ownerToken })).status).toBe(204);
+    expect((await call("/c/" + inb.id, { method: "DELETE", token: inb.ownerToken })).status).toBe(204);
+    put.finish(); msg.finish();
+    expect((await put.res).status).toBe(404);
+    expect((await msg.res).status).toBe(404);
+    for (const id of [sy.id, inb.id]) {
+      await runInDurableObject(stubOf(id), async (_o, state) => {
+        expect(tables(state.storage.sql)).toEqual([]);
+        expect(await state.storage.getAlarm()).toBeNull();
+      });
+    }
+  });
+
   it("revoking a sync writer closes its sockets", async () => {
     const ch = await create("sync");
     const w = await mint(ch.id, ch.ownerToken);
@@ -164,6 +222,19 @@ describe("auth", () => {
     await call("/c/" + ch.id + "/writers/" + w.wid, { method: "DELETE", token: ch.ownerToken });
     expect(await until(() => s.closed !== null)).toBe(true);
     expect(s.closed!.code).toBe(4001);
+  });
+
+  it("a request to an unknown id stores nothing", async () => {
+    const untouched = "B".repeat(22), probed = "C".repeat(22);
+    const empty = await runInDurableObject(stubOf(untouched), async (_o, state) => state.storage.sql.databaseSize);
+    expect((await call("/c/" + probed)).status).toBe(404);
+    expect((await call("/c/" + probed, { token: "x".repeat(43) })).status).toBe(404);
+    expect((await put("/c/" + probed + "/state", { data: data() }, { token: "x" })).status).toBe(404);
+    await runInDurableObject(stubOf(probed), async (_o, state) => {
+      expect(tables(state.storage.sql)).toEqual([]);
+      expect(state.storage.sql.databaseSize).toBe(empty);
+      expect(await state.storage.getAlarm()).toBeNull();
+    });
   });
 
   it("unknown ids and malformed requests", async () => {
@@ -193,9 +264,17 @@ describe("limits", () => {
 
   it("rejects writes that come too fast with 429", async () => {
     const ch = await create("inbox");
-    const w = await mint(ch.id, ch.ownerToken);
+    const w = await mint(ch.id, ch.ownerToken); // pairing is a write too, so it uses one of the burst
     const codes: number[] = [];
     for (let i = 0; i < LIMITS.burst + 3; i++) codes.push((await post("/c/" + ch.id + "/messages", { data: data() }, { token: w.token })).status);
+    expect(codes.slice(0, LIMITS.burst - 1).every(c => c === 201)).toBe(true);
+    expect(codes).toContain(429);
+  });
+
+  it("rate-limits pairing like other writes", async () => {
+    const ch = await create("sync");
+    const codes: number[] = [];
+    for (let i = 0; i < LIMITS.burst + 3; i++) codes.push((await call("/c/" + ch.id + "/writers", { method: "POST", token: ch.ownerToken })).status);
     expect(codes.slice(0, LIMITS.burst).every(c => c === 201)).toBe(true);
     expect(codes).toContain(429);
   });
@@ -210,7 +289,7 @@ describe("limits", () => {
 
 describe("CORS", () => {
   it("allows the site and localhost, and answers preflights", async () => {
-    for (const origin of [SITE, "http://localhost:8080", "http://127.0.0.1:5500"]) {
+    for (const origin of [SITE, "todos-app://app", "http://localhost:8080", "http://127.0.0.1:5500"]) {
       const res = await post("/c", { kind: "inbox" }, { origin });
       expect(res.status).toBe(201);
       expect(res.headers.get("Access-Control-Allow-Origin")).toBe(origin);
@@ -225,7 +304,7 @@ describe("CORS", () => {
   });
 
   it("refuses other origins", async () => {
-    for (const origin of ["https://evil.example", "https://todos.always17.com.evil.example", "http://localhost.evil.example", "null"]) {
+    for (const origin of ["https://evil.example", "https://todos.always17.com.evil.example", "http://localhost.evil.example", "todos-app://evil", "null"]) {
       const res = await post("/c", { kind: "inbox" }, { origin });
       expect(res.status).toBe(403);
       expect(res.headers.get("Access-Control-Allow-Origin")).toBeNull();
@@ -250,6 +329,20 @@ describe("WebSocket", () => {
     expect(s.got[1].id).toBeTypeOf("string");
   });
 
+  it("tells the owner's sockets when a message is removed", async () => {
+    const ch = await create("inbox");
+    const w = await mint(ch.id, ch.ownerToken);
+    const s = await socket(ch.id, ch.ownerToken);
+    const { id: mid } = await (await post("/c/" + ch.id + "/messages", { data: data() }, { token: w.token })).json<{ id: string }>();
+    expect(await until(() => s.got.length === 1)).toBe(true);
+    expect((await call("/c/" + ch.id + "/messages/" + mid, { method: "DELETE", token: ch.ownerToken })).status).toBe(204);
+    expect(await until(() => s.got.length === 2)).toBe(true);
+    expect(s.got[1]).toEqual({ type: "removed", id: mid });
+    expect((await call("/c/" + ch.id + "/messages/" + mid, { method: "DELETE", token: ch.ownerToken })).status).toBe(204);
+    await settle();
+    expect(s.got).toHaveLength(2); // nothing to remove the second time, so nothing sent
+  });
+
   it("pushes share state to anonymous viewers, and tells them when the channel is deleted", async () => {
     const ch = await create("share");
     const s = await socket(ch.id);
@@ -262,6 +355,8 @@ describe("WebSocket", () => {
     expect(await until(() => s.got.length === 3)).toBe(true);
     expect(s.got[2]).toEqual({ type: "deleted" });
     expect((await call("/c/" + ch.id)).status).toBe(404);
+    expect((await put("/c/" + ch.id + "/state", { data: "AGAIN" }, { token: ch.ownerToken })).status).toBe(404);
+    await runInDurableObject(stubOf(ch.id), async (_o, state) => { expect(tables(state.storage.sql)).toEqual([]); });
   });
 });
 
@@ -269,7 +364,6 @@ describe("expiry", () => {
   it("deletes a channel unused for 90 days, and keeps one in use", async () => {
     const used = await create("inbox");
     const idle = await create("inbox");
-    const stubOf = (id: string) => env.CHANNEL.get(env.CHANNEL.idFromName(id));
     await runInDurableObject(stubOf(idle.id), async (_o, state) => {
       state.storage.sql.exec("UPDATE meta SET v = ? WHERE k = 'touched'", Date.now() - LIMITS.ttl - 1000);
       expect(await state.storage.getAlarm()).not.toBeNull();
