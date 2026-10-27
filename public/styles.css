@@ -495,3 +495,14 @@ kbd {
 .shares .machine small { display: block; }
 .shares button.confirm { color: var(--danger); }
 .keys .share-on { color: var(--pen); font-weight: 600; }
+
+/* Device sync */
+.dialog .dialog-acts.start { justify-content: flex-start; margin: 4px 0 6px; }
+.dialog .cmd .text-field { flex: 1; min-width: 0; background: var(--sheet); }
+.qr { width: min(280px, 100%); margin: 8px 0; border: 1px solid var(--rule); border-radius: 8px; overflow: hidden; }
+.qr svg { display: block; width: 100%; height: auto; }
+.ghost-btn.danger:hover { color: var(--danger); }
+.dialog .dialog-acts { align-items: center; }
+#syncOffBtn { margin-right: auto; }
+.dialog .warn p { margin: 0 0 6px; }
+.dialog .warn label { display: flex; gap: 6px; align-items: center; font-weight: 600; }

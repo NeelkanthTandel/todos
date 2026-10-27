@@ -69,6 +69,7 @@
     <button type="button" class="ghost-btn clip-toggle share-on" id="shareStatus" aria-haspopup="dialog" hidden>Sharing live</button>
     <button type="button" class="ghost-btn clip-toggle" id="clipToggle" hidden></button>
     <button type="button" class="ghost-btn clip-toggle" id="claudeBtn" aria-haspopup="dialog" hidden>Connect Claude Code</button>
+    <button type="button" class="ghost-btn clip-toggle" id="syncBtn" aria-haspopup="dialog" hidden>Sync across devices</button>
   </footer>
 </div>
 
@@ -126,6 +127,44 @@
   <div class="dialog-acts"><button type="button" class="ghost-btn" id="sharesNew">Share another…</button><button type="button" class="ghost-btn" id="sharesClose">Done</button></div>
 </dialog>
 
+<dialog class="dialog" id="syncDialog" aria-labelledby="syncTitle">
+  <h2 id="syncTitle">Sync across devices</h2>
+  <div id="syncOff">
+    <p>Keep this list the same on your laptop, phone and other browsers. A change on one shows up on the others, and each keeps working offline. Your list is encrypted before it leaves the device, and there's no account.</p>
+    <div class="dialog-acts start"><button type="button" class="clip-yes" id="syncStart">Start syncing this device</button></div>
+    <h3>Already syncing on another device?</h3>
+    <p class="muted">On that device, open <b>Sync across devices</b> and show a pairing code. Scan its QR code with this device's camera, or paste the code here.</p>
+    <div class="cmd"><input type="text" class="text-field" id="syncCode" aria-label="Pairing code" autocomplete="off" spellcheck="false"><button type="button" class="clip-yes" id="syncLink">Link</button></div>
+    <div class="warn" id="syncFromLink" hidden>
+      <p>You opened a pairing link. Linking copies <b>your whole list</b> to whoever made it, and keeps sending them every change. Only link if you made this code on one of your own devices.</p>
+      <label><input type="checkbox" id="syncMine"> I made this code on my own device</label>
+    </div>
+    <fieldset class="opts" id="syncChoice" hidden>
+      <legend>This device has todos too</legend>
+      <label><input type="radio" name="syncMode" id="syncMerge" value="merge" checked> Merge both lists</label>
+      <label><input type="radio" name="syncMode" id="syncReplace" value="replace"> Replace this device's list</label>
+    </fieldset>
+  </div>
+  <div id="syncOn" hidden>
+    <p id="syncState">This device is synced.</p>
+    <div id="syncOwner">
+      <h3>Add a device</h3>
+      <button type="button" class="ghost-btn" id="syncShowCode">Show a pairing code</button>
+      <div id="syncPair" hidden>
+        <div class="qr" id="syncQr"></div>
+        <p class="muted">Scan it with the other device's camera, or paste this code into <b>Sync across devices</b> there:</p>
+        <div class="cmd"><code id="syncPairCode"></code><button type="button" class="clip-yes" id="syncCopy">Copy</button></div>
+        <p class="muted">The code holds your list's encryption key. Use it on one device; the next device gets a new code.</p>
+      </div>
+      <h3>Linked devices</h3>
+      <ul class="machines" id="syncDevices"></ul>
+    </div>
+    <p class="muted" id="syncNotOwner" hidden>To add or unlink devices, use the device you started syncing on.</p>
+  </div>
+  <p class="err" id="syncErr" role="alert" hidden></p>
+  <div class="dialog-acts"><button type="button" class="ghost-btn danger" id="syncOffBtn" hidden>Turn off sync on this device</button><button type="button" class="ghost-btn" id="syncClose">Done</button></div>
+</dialog>
+
 <div class="menu" id="menu" role="menu" hidden></div>
 <div class="toast" id="toast" role="status"><span id="toastMsg"></span><button type="button" id="undo">Undo</button></div>
 <div class="sr" aria-live="polite" id="live"></div>
@@ -134,6 +173,7 @@
 <script src="storage.js"></script>
 <script src="clipboard.js"></script>
 <script src="relay.js"></script>
+<script src="qr.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

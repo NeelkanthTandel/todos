@@ -63,7 +63,7 @@ Tokens go in `Authorization: Bearer <token>`. A browser can't set headers on a W
 | `POST /c/:id/messages` `{ data }` | `inbox` writers | Appends a message. `201 { id }` |
 | `DELETE /c/:id/messages/:mid` | owner | Removes a handled message. `204` |
 | `POST /c/:id/writers` | owner (`inbox`, `sync`) | Pairs a machine or device. `201 { wid, token, created }` |
-| `GET /c/:id/writers` | owner | `{ writers: [{ wid, created, used }] }` (`used`: last message, or `null`) |
+| `GET /c/:id/writers` | owner | `{ writers: [{ wid, created, used }] }` (`used`: an inbox writer's last message, or a sync device's last request; `null` until then) |
 | `DELETE /c/:id/writers/:wid` | owner | Revokes it, and closes its open sockets. `204` |
 | `DELETE /c/:id` | owner | Deletes the channel. Open sockets get `{ "type": "deleted" }`. `204` |
 

@@ -25,6 +25,7 @@
 - **Clipboard suggestions** (Chrome, Edge, Brave; off until you turn them on). Copy something, come back to Todos, and it's waiting in the box, selected: `Enter` adds it; `Backspace`, `Esc` or typing dismisses it; `Tab` keeps it to edit. Anything that looks like a password, API key, token, database URL with credentials, one-time code or card number is never suggested, and copies older than 10 minutes are ignored. Turn it on or off from the footer.
 - **Claude Code sessions as suggestions** (optional). Connect Claude Code and each new session shows up above the board; one key adds it, and the todo follows the session's status. End-to-end encrypted. See [Claude Code integration](#claude-code-integration).
 - **Live sharing** (optional, read-only for the people you share with). **Export → Share live link…** makes a link to some or all of your board; whoever opens it sees your changes within a second, and can't change a thing. See [Sharing your board](#sharing-your-board).
+- **Sync across devices** (optional). Pair your laptop, phone and other browsers with a code or QR code and they keep the same list, merging changes todo by todo and catching up after working offline. No account; end-to-end encrypted. See [Sync across devices](#sync-across-devices).
 - **Light and dark**, following your system. Works on phones.
 - **Private.** No accounts, analytics, trackers or third-party requests. It's a static page; your list never leaves your browser. (The optional Claude Code integration and live sharing go through this project's own relay, encrypted end to end.)
 
@@ -81,11 +82,23 @@ Share a live, **read-only** view of your todos through a link. It needs the rela
 
 The link holds the board's encryption key after the `#`, which browsers never send to a server, and Todos takes it out of the address bar as soon as the page opens. The relay only ever sees ciphertext.
 
+## Sync across devices
+
+Keep the same list on your laptop, phone and other browsers. Like live sharing, it needs the relay (`relayBase` in `public/config.js`).
+
+1. On your first device, click **Sync across devices** in the footer, then **Start syncing this device**. Your list is encrypted and uploaded.
+2. Click **Show a pairing code**. Scan the QR code with your other device's camera (it opens Todos with the code filled in), or copy the code and paste it into **Sync across devices** there, then **Link**.
+3. If that device already has todos, pick **Merge both lists** (the default) or **Replace this device's list**.
+
+From then on, a change on any device reaches the others within a moment, and each keeps working offline. Changes merge **per todo**: two devices editing different todos both keep their edits; the same todo edited on both keeps the newer edit; a deleted todo stays deleted even if an older copy turns up later (deletions are remembered for 30 days); and moves on two devices both survive, because each todo keeps its own position in its lane.
+
+The first device lists linked devices, each with **Unlink**, which stops that device syncing straight away (it keeps its list). **Turn off sync on this device** stops syncing on just that one. Undo still works for your own changes; when another device's list arrives, undo history starts again, as it does when another tab saves.
+
 ## Where your todos are stored
 
 By default everything lives in your browser's `localStorage`:
 
-- **Each browser keeps its own list.** Your laptop and phone don't share todos, and nothing reaches a server. Use **Export** and **Import** to copy a list across.
+- **Each browser keeps its own list.** Your laptop and phone don't share todos, and nothing reaches a server, unless you turn on [Sync across devices](#sync-across-devices). Or use **Export** and **Import** to copy a list across.
 - **Clearing site data deletes it**, and Safari deletes it if you haven't opened the site for 7 days (unless you've added it to your Home Screen). Export a backup now and then.
 - **Tabs stay in step.** A change in one tab shows up in your other tabs straight away.
 
@@ -139,7 +152,7 @@ Give it its own domain or subdomain if you can. Every project page under `you.gi
 
 ## Running your own relay
 
-The Claude Code integration and live sharing need the relay in [`relay/`](relay/README.md), a Cloudflare Worker that fits the free plan. `.github/workflows/relay.yml` deploys it from `main` once the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repo secrets are set. Then set `relayBase` in `public/config.js` to its address and add its `https://` and `wss://` origins to `connect-src` in `public/index.html`. With `relayBase` empty, both stay hidden.
+The Claude Code integration, live sharing and device sync need the relay in [`relay/`](relay/README.md), a Cloudflare Worker that fits the free plan. `.github/workflows/relay.yml` deploys it from `main` once the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repo secrets are set. Then set `relayBase` in `public/config.js` to its address and add its `https://` and `wss://` origins to `connect-src` in `public/index.html`. With `relayBase` empty, all three stay hidden.
 
 ## Moving to a database later
 
@@ -153,6 +166,7 @@ The app never talks to a database directly. It always keeps the `localStorage` c
 - **The server works out who the user is** from its own session or cookie, so the client never sends a user id.
 - **Postgres:** `create table todo_lists (user_id text primary key, items jsonb not null, updated bigint not null);`. GET selects the row, PUT upserts it.
 - **Mongo:** one document per user, `{ _id: userId, items: [...], updated }`, written with `replaceOne(..., { upsert: true })`.
+- **Each todo carries `pos` (its place in its lane) and `updated` (when it last changed)** for device sync. Older lists without them still load, in the order they were saved.
 - **Existing browser data moves over automatically.** On first connect, if the server answers `404` (or an empty list with `updated: 0`) and the browser has todos, the app uploads them. Changes made while offline are uploaded when the server is reachable again.
 - **A newer server list wins.** When the tab regains focus, the app fetches the list and takes it if its `updated` is newer than what this browser last saw.
 - **Run the API on the same origin as the site** (for example behind the same domain's `/api` path). That avoids CORS and keeps cookies simple. An exported JSON file can seed the table, since `items` has exactly the shape the API stores.

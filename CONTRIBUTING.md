@@ -21,10 +21,11 @@ Your local copy has its own `localStorage` (it's a different origin from the liv
 | File | What it does |
 | --- | --- |
 | `public/index.html` | Markup, and the Content Security Policy |
-| `public/app.js` | The board: lanes, drag and drop, list parsing, undo/redo, shortcuts, export/import, Claude sessions, live sharing |
-| `public/storage.js` | Where todos are kept: localStorage always, plus an optional HTTP mirror. The API contract is at the top. |
+| `public/app.js` | The board: lanes, drag and drop, list parsing, undo/redo, shortcuts, export/import, Claude sessions, live sharing, device sync |
+| `public/storage.js` | Where todos are kept: localStorage always, plus an optional HTTP mirror or device sync over the relay (with the per-todo merge). The API contract is at the top. |
 | `public/clipboard.js` | Decides whether copied text is safe to suggest (secret patterns). Add a case to `tests/smoke.html` when you change it. |
 | `public/relay.js` | Client for the relay: channels, state, pairing codes, the WebSocket, and AES-GCM + deflate encryption |
+| `public/qr.js` | A small QR code encoder for sync pairing codes (no library) |
 | `public/config.js` | Per-deploy settings |
 | `public/styles.css` | Styles, light and dark |
 | `tests/smoke.html` | End-to-end checks that drive the app in an iframe |
