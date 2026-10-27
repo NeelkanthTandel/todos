@@ -27,7 +27,7 @@ Today a save replaces the whole list, which loses edits when two devices change 
   - keep the order as an explicit `pos` (a fractional index per lane), so concurrent reorders merge instead of fighting.
 
   Update `normalize()` and the contract comment in `storage.js`.
-- **Merge rule:** last writer wins **per todo**, by `updated`, with ties broken by id. Union by id; tombstones beat older versions.
+- **Merge rule:** last writer wins **per todo**, by `updated`. On a tie a deletion wins, then a fixed choice (the larger canonical JSON), so every device picks the same. Union by id; tombstones beat older versions. A linked Claude session's status goes by its own `updatedAt`, not the todo's.
 - **Saving:** `PUT /c/:id/state` with `If-Match: <version>`. On `409`, fetch the current state, merge, and retry with backoff.
 - **Receiving:** live `state` messages merge into the local list.
 - **Undo:** the existing `adopt()` behaviour (history cleared when another device's list arrives) still applies. Revisit only if it gets in the way.

@@ -339,8 +339,8 @@
     c = cardFor("sess-2"); c.focus(); key(c, "Escape");
     check("Esc dismisses it", !cardFor("sess-2") && !shown($("tray")));
     check("…with Undo in the toast", $("toastMsg").textContent === "Suggestion dismissed" && shown($("undo")));
-    $("undo").click();
-    check("Undo brings the suggestion back", !!cardFor("sess-2") && shown($("tray")));
+    key(doc().body, "z", { ctrlKey: true });
+    check("Ctrl+Z right after brings the suggestion back, and undoes nothing else", !!cardFor("sess-2") && shown($("tray")) && !!todoFor("sess-1"));
     c = cardFor("sess-2"); c.focus(); key(c, "Delete");
     check("Delete dismisses it too", !cardFor("sess-2"));
     await deliver(ev("running", "sess-2"));
@@ -374,8 +374,15 @@
     check("newest suggestion comes first", cards()[0].dataset.session === "sess-8", cards().map(x => x.dataset.session).join());
 
     doc().activeElement.blur();
+    $("doneBtn").click(); await sleep(60);
     key(doc().body, "a");
+    check("A waits while the Done panel is open", !!cardFor("sess-8") && !rows("h").includes("Ended just now"));
+    key(doc().body, "Escape"); await sleep(60);
+    doc().activeElement.blur();
+    key(doc().body, "a");
+    key(doc().body, "a", { repeat: true }); key(doc().body, "a", { repeat: true });
     check("A adds the newest suggestion to Boiling over", rows("h").includes("Ended just now") && !cardFor("sess-8"));
+    check("…and holding A adds just that one", !!cardFor("sess-6") && !!cardFor("sess-5"));
     c = cardFor("sess-6"); c.focus(); key(c, "e");
     const edit = c.querySelector(".tray-edit") || cardFor("sess-6").querySelector(".tray-edit");
     edit.value = "Look at the API rate limits"; edit.dispatchEvent(new (win().Event)("input", { bubbles: true }));
@@ -566,6 +573,8 @@
     check("Change what's included reopens the dialog with the link", $("shareDialog").open && !$("sharesDialog").open && $("shareLink").textContent === link && $("shareCreate").textContent === "Save");
     $("shareDone").checked = true;
     doc().querySelector('#shareDialog input[data-lane="n"]').checked = false;
+    // Another tab saves the shares while the dialog is open: Save must still change the live share.
+    win().dispatchEvent(new (win().StorageEvent)("storage", { key: "todos.shares", newValue: localStorage.getItem("todos.shares") }));
     next = pushed();
     $("shareCreate").click();
     await next;
@@ -782,6 +791,11 @@
     const hugeRows = ["h", "m", "l", "n"].reduce((n, l) => n + rows(l).length, 0);
     check("a shared board is capped at 200,000 characters", hugeRows > 300 && hugeRows <= 420 && localStorage.getItem("todos.shared").length < 260000, hugeRows + " rows, " + localStorage.getItem("todos.shared").length + " chars");
     check("…and your own list is untouched", ownSame());
+    const sneaky = { v: 1, name: "Priya", at: Date.now(), lanes: [[{ t: "Pay\u0001 the \u202erent" }].concat(Array.from({ length: 1000 }, (_, i) => ({ t: i + '"'.repeat(480) }))), [], [], []] };
+    await deliverState(await win().TodoRelay.encrypt(VKEY, sneaky), 11.5);
+    check("shared text loses control and bidi characters", rows("h")[0] === "Pay the rent", JSON.stringify(rows("h")[0]));
+    check("the cap counts characters as stored (escapes too)", rows("h").length < 260 && localStorage.getItem("todos.shared").length < 260000,
+      rows("h").length + " rows, " + localStorage.getItem("todos.shared").length + " chars");
     await deliverState(await win().TodoRelay.encrypt(VKEY, board2), 12);
 
     // Switching: the backtick, and the switcher in the heading.
@@ -840,7 +854,8 @@
     const bigLanes = n => [Array.from({ length: 400 }, (_, i) => ({ t: n + "-" + i + " " + "y".repeat(490) })), [], [], []];
     const ids6 = [1, 2, 3, 4, 5, 6].map(n => String(n).repeat(22));
     const keys6 = ids6.map(() => win().TodoRelay.newKey());
-    localStorage.setItem("todos.shared", JSON.stringify(ids6.map((id, i) => ({ id, key: keys6[i], name: "B" + i, lastState: { v: 1, name: "B" + i, at: 1, lanes: bigLanes(i) }, lastSeenAt: 10 + i, version: 1, kept: i === 1, stopped: i === 1 }))));
+    const planted = Array.from({ length: 55 }, (_, i) => ({ id: ("Z" + i).padEnd(22, "z"), key: win().TodoRelay.newKey(), name: "", lastState: null, lastSeenAt: 0, version: 0 }));
+    localStorage.setItem("todos.shared", JSON.stringify(ids6.map((id, i) => ({ id, key: keys6[i], name: "B" + i, lastState: { v: 1, name: "B" + i, at: 1, lanes: bigLanes(i) }, lastSeenAt: 10 + i, version: 1, kept: i === 1, stopped: i === 1 })).concat(planted)));
     localStorage.setItem("todos.shares", JSON.stringify([{ id: SHARE_ID, key: win().TodoRelay.newKey(), ownerToken: "share-owner", relay: "https://relay.test", name: "Me", options: {}, createdAt: 1 }]));
     const ATTACKER = win().TodoRelay.newKey();
     socks.length = 0;
@@ -850,6 +865,7 @@
     check("saved shared boards stay within about 2 MB, oldest copies dropped first", localStorage.getItem("todos.shared").length <= 1e6 &&
       kept6[0].lastState && kept6[1].lastState && !kept6[2].lastState && !kept6[3].lastState && kept6[5].lastState, localStorage.getItem("todos.shared").length + " " + kept6.map(x => !!x.lastState).join());
     check("…and a copy you chose to keep is never dropped", kept6[1].kept && kept6[1].lastState);
+    check("at most 50 shared boards are kept, the ones never looked at going first", kept6.length === 50 && ids6.every(id => kept6.some(x => x.id === id)), kept6.length);
     check("a link with another key for a saved board doesn't replace its key or wipe it", kept6[0].key === keys6[0] && kept6[0].altKey === ATTACKER && rows("h").length === 400);
     seam();
     await waitFor(() => socks.length);
@@ -1021,6 +1037,7 @@
       if (path === "/c/" + SYNC_ID && init.method === "GET") return new Response(JSON.stringify({ kind: "sync", version: relaySide.version, data: relaySide.data }));
       if (path.endsWith("/state") && init.method === "PUT") {
         if (relaySide.beforePut) { const f = relaySide.beforePut; relaySide.beforePut = null; await f(); }
+        if (relaySide.tooBig) return new Response('{"error":"state too large"}', { status: 413 });
         if (init.headers["If-Match"] !== undefined && init.headers["If-Match"] !== String(relaySide.version)) {
           relaySide.conflicts++;
           return new Response(JSON.stringify({ error: "version conflict", version: relaySide.version }), { status: 409 });
@@ -1150,6 +1167,14 @@
     win().dispatchEvent(new (win().StorageEvent)("storage", { key: "todos.v1", newValue: wb }));
     await sleep(200);
     check("another tab writing the same list back uploads nothing", relaySide.puts === putsWB, relaySide.puts - putsWB + " puts");
+
+    check("device sync leaves the server store's unsent mark alone", localStorage.getItem("todos.pending") === "1");
+    relaySide.tooBig = true;
+    up = flushed();
+    type("One too many");
+    await up;
+    check("a list too big for the relay says so", $("status").textContent === "Too many todos to sync. Saved in this browser." && $("toastMsg").textContent.startsWith("Your list is too big to sync"), $("status").textContent);
+    relaySide.tooBig = false;
 
     // Linked devices and unlinking (on the device that started sync).
     relaySide.writers[0].used = Date.now();

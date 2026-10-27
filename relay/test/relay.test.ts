@@ -2,6 +2,7 @@ import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test"
 import { exports } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import { LIMITS } from "../src/channel";
+import { limitKey } from "../src/ip";
 
 const BASE = "https://relay.test";
 const SITE = "https://todos.always17.com";
@@ -376,5 +377,28 @@ describe("expiry", () => {
     await runInDurableObject(stubOf(used.id), async (_o, state) => {
       expect(await state.storage.getAlarm()).toBeGreaterThan(Date.now() + LIMITS.ttl - 864e5);
     });
+  });
+  it("keeps a share link alive while people are viewing it", async () => {
+    const sh = await create("share");
+    await runInDurableObject(stubOf(sh.id), async (_o, state) => {
+      state.storage.sql.exec("UPDATE meta SET v = ? WHERE k = 'touched'", Date.now() - LIMITS.ttl - 1000);
+      await state.storage.deleteAlarm();
+    });
+    expect((await call("/c/" + sh.id)).status).toBe(200); // a viewer, no token
+    await runInDurableObject(stubOf(sh.id), async (_o, state) => {
+      expect(await state.storage.getAlarm()).toBeGreaterThan(Date.now() + LIMITS.ttl - 864e5);
+    });
+    expect(await runDurableObjectAlarm(stubOf(sh.id))).toBe(true);
+    expect((await call("/c/" + sh.id)).status).toBe(200);
+  });
+});
+
+describe("rate-limit keys", () => {
+  it("counts an IPv6 host by its /64, and IPv4 by its address", () => {
+    expect(limitKey("203.0.113.7")).toBe("203.0.113.7");
+    expect(limitKey("2001:db8:1:2:aaaa:bbbb:cccc:dddd")).toBe("2001:db8:1:2::/64");
+    expect(limitKey("2001:DB8:1:2::1")).toBe(limitKey("2001:db8:1:2:ffff::9"));
+    expect(limitKey("2001:db8::1")).toBe("2001:db8:0:0::/64");
+    expect(limitKey("::ffff:203.0.113.7")).toBe("::ffff:203.0.113.7");
   });
 });

@@ -1,6 +1,7 @@
 // Router: CORS, request shape and channel creation. Everything about a channel (auth, storage, limits,
 // sockets) lives in the Channel Durable Object. The relay only ever sees ciphertext and never logs bodies.
 import { Channel, KINDS, fail, randomId, readCapped } from "./channel";
+import { limitKey } from "./ip";
 
 export { Channel };
 
@@ -58,7 +59,7 @@ async function route(req: Request, env: Env): Promise<Response> {
 
   if (parts.length === 1) {
     if (req.method !== "POST") return fail(405, "method not allowed");
-    const ip = req.headers.get("CF-Connecting-IP") || "unknown";
+    const ip = limitKey(req.headers.get("CF-Connecting-IP") || "unknown");
     if (env.CREATE_LIMIT && !(await env.CREATE_LIMIT.limit({ key: ip })).success) return fail(429, "too many channels created, try again in a minute");
     const body = await readCapped(req, 1024);
     if (body === null) return fail(413, "body too large");

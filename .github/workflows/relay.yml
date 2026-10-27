@@ -19,6 +19,8 @@ jobs:
   deploy:
     # workflow_dispatch can pick any branch; only main is ever deployed.
     if: github.ref == 'refs/heads/main'
+    # Put the Cloudflare secrets on this environment (limited to main) so no other workflow or branch can read them.
+    environment: relay
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:

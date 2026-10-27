@@ -152,7 +152,7 @@ Give it its own domain or subdomain if you can. Every project page under `you.gi
 
 ## Running your own relay
 
-The Claude Code integration, live sharing and device sync need the relay in [`relay/`](relay/README.md), a Cloudflare Worker that fits the free plan. `.github/workflows/relay.yml` deploys it from `main` once the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` repo secrets are set. Then set `relayBase` in `public/config.js` to its address and add its `https://` and `wss://` origins to `connect-src` in `public/index.html`. With `relayBase` empty, all three stay hidden.
+The Claude Code integration, live sharing and device sync need the relay in [`relay/`](relay/README.md), a Cloudflare Worker that fits the free plan. `.github/workflows/relay.yml` deploys it from `main` once the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets are set on its `relay` environment (see [relay/README.md](relay/README.md#deploy)). Then set `relayBase` in `public/config.js` to its address and add its `https://` and `wss://` origins to `connect-src` in `public/index.html`. With `relayBase` empty, all three stay hidden.
 
 ## Moving to a database later
 

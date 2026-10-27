@@ -162,18 +162,26 @@
       try {
         const r = await store.set({ items: store.merges ? docRecords() : items, updated });
         if (docRef !== store) break;
-        lsSet(SYNCED_KEY, String(updated));
+        // The pending/synced marks belong to the server store (config storage: "http"). Device sync must leave
+        // them alone: turning it off hands back to that store, which must still see these changes as unsent.
+        if (!store.merges) lsSet(SYNCED_KEY, String(updated));
         if (r && Array.isArray(r.items)) takeRemote(r.items); // it merged in another device's list first
-        if (!dirty) { lsSet(PENDING_KEY, ""); setStatus("Synced"); }
+        if (!dirty) { if (!store.merges) lsSet(PENDING_KEY, ""); setStatus("Synced"); }
         tries = 0;
       } catch (e) {
         if (docRef !== store) break;
         if (e && e.code === "unavailable") { dirty = true; setStatus("Offline. Retrying…"); await sleep(backoff(tries++)); continue; }
         if (e && e.code === "gone") { syncGone(e.status); break; }
-        setStatus("Couldn't sync. Saved in this browser."); docRef = null;
+        if (e && e.status === 413) {
+          setStatus("Too many todos to sync. Saved in this browser.");
+          toast("Your list is too big to sync. Clear some done todos, then reload.");
+        } else setStatus("Couldn't sync. Saved in this browser.");
+        docRef = null;
       }
     }
     writing = false;
+    // The store was swapped (sync turned on or off) while this loop was busy: the new one still has to get these.
+    if (dirty && docRef && docRef !== store) flush();
     window.dispatchEvent(new Event("todos:flushed")); // lets tests/smoke.html know a save reached the store
   }
   function save() {
@@ -577,7 +585,7 @@
     // Composer empty and the mouse moved onto a todo since you last typed: shortcuts go to that todo.
     if (!input.value && !e.metaKey && !e.ctrlKey && !e.altKey && ptrMovedAt > typedAt && /^([1-4sSxXeE]|Delete|Enter)$/.test(e.key)) {
       const card = hoveredCard();
-      if (card && trayAction(card, e.key, true)) { e.preventDefault(); return; }
+      if (card && trayAction(card, e.key, true, e.repeat)) { e.preventDefault(); return; }
       const li = e.key !== "Enter" && hoveredRow();
       if (li && rowAction(li, e.key, true)) { e.preventDefault(); return; }
     }
@@ -1294,13 +1302,17 @@
     if (!s) return;
     if (trayEdit && trayEdit.id === id) trayEdit = null;
     s.dismissed = true; saveSessions(); renderTray();
-    toast("Suggestion dismissed", "Undo", () => { s.dismissed = false; sessions.set(s.id, s); saveSessions(); renderTray(); });
+    // Not in the undo history (the tray isn't your list), but Ctrl+Z right after should still take it back.
+    const back = () => { s.dismissed = false; sessions.set(s.id, s); saveSessions(); renderTray(); toast("Suggestion is back"); };
+    back.notInHistory = true;
+    toast("Suggestion dismissed", "Undo", back);
     announce("Suggestion dismissed");
   }
   // Card shortcuts, for a focused card and the card under the mouse (like rowAction for todos).
-  function trayAction(li, k, viaHover) {
+  function trayAction(li, k, viaHover, repeat) {
     const id = li.dataset.session;
     if (viewing) return false;
+    if (repeat && (k === "Enter" || /^[1-4]$/.test(k))) return true; // a held key adds one, not several
     if (k === "Enter" || k === "1") { addSession(id, "h"); return true; }
     if (/^[2-4]$/.test(k)) { addSession(id, ORDER[+k - 1]); return true; }
     if (k === "e" || k === "E") { trayEdit = { id, value: sessions.get(id)?.title || "" }; renderTray(); return true; }
@@ -1330,7 +1342,7 @@
       return;
     }
     if (e.target !== li || e.metaKey || e.ctrlKey || e.altKey) return; // buttons keep Enter and Space
-    if (trayAction(li, e.key, false)) { e.preventDefault(); e.stopPropagation(); }
+    if (trayAction(li, e.key, false, e.repeat)) { e.preventDefault(); e.stopPropagation(); }
     else if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
       const sib = e.key === "ArrowRight" ? li.nextElementSibling : li.previousElementSibling;
       if (sib) { e.preventDefault(); sib.focus(); }
@@ -1614,6 +1626,10 @@
     const f = readShareForm();
     lsSet(SHARE_NAME_KEY, f.name);
     if (shareEditing) {
+      // Another tab may have reloaded the list (or stopped this share) while the dialog was open: edit the live one.
+      const cur = shares.find(s => s.id === shareEditing.id);
+      if (!cur) { shareDlg.close(); toast("That link was stopped in another tab"); return; }
+      shareEditing = cur;
       Object.assign(shareEditing, f, { sent: "" });
       saveShares(); scheduleShares(true);
       shareDlg.close(); toast("Updated what this link shows");
@@ -1633,7 +1649,10 @@
     } catch { $("shareErr").hidden = false; }
     btn.disabled = false;
   });
-  $("shareCopy").addEventListener("click", () => { if (shareEditing) copyLink(shareEditing); });
+  $("shareCopy").addEventListener("click", () => {
+    const cur = shareEditing && shares.find(s => s.id === shareEditing.id);
+    if (cur) copyLink(cur); else if (shareEditing) toast("That link was stopped in another tab");
+  });
   $("shareClose").addEventListener("click", () => shareDlg.close());
 
   // Shared links: every active share, with Copy link, Change what's included and Stop sharing.
@@ -1683,7 +1702,7 @@
   const SHARED_KEY = NS + ".shared", LAST_SHARED_KEY = NS + ".lastShared";
   // At most 5,000 todos and 200,000 characters of text per board, and about 2 MB for all the boards kept in
   // localStorage, so someone else's board can never fill the storage your own list needs.
-  const MAX_SHARED_ITEMS = 5000, MAX_SHARED_CHARS = 200000, SHARED_BUDGET = 1e6;
+  const MAX_SHARED_ITEMS = 5000, MAX_SHARED_CHARS = 200000, SHARED_BUDGET = 1e6, MAX_SHARED_BOARDS = 50;
   const COPY_LABEL = "copy to my list";
   // A decrypted snapshot is untrusted: the right shape or nothing, known fields only, text capped like normalize().
   function normShare(s) {
@@ -1694,10 +1713,12 @@
       const out = [];
       for (const x of l) {
         if (n >= MAX_SHARED_ITEMS || chars >= MAX_SHARED_CHARS) break;
-        if (!x || typeof x !== "object" || typeof x.t !== "string" || !x.t.trim()) continue;
-        const it = { t: x.t.trim().slice(0, 500) };
+        if (!x || typeof x !== "object" || typeof x.t !== "string") continue;
+        const t = x.t.replace(CONTROL_RE, "").trim().slice(0, 500);
+        if (!t) continue;
+        const it = { t };
         if (x.d === 1) it.d = 1; else if (x.w === 1) it.w = 1;
-        out.push(it); n++; chars += it.t.length;
+        out.push(it); n++; chars += JSON.stringify(t).length; // as stored: escapes count too
       }
       return out;
     });
@@ -1737,6 +1758,13 @@
   }
   let shared = loadShared(), viewSub = null, viewStatus = "offline";
   function saveShared() {
+    // Every link opened is saved, so cap how many: the ones looked at longest ago go first (never the one on
+    // screen, nor a copy you chose to keep).
+    if (shared.length > MAX_SHARED_BOARDS) {
+      const drop = new Set(shared.filter(x => !x.kept && x !== viewing).sort((a, b) => a.lastSeenAt - b.lastSeenAt)
+        .slice(0, shared.length - MAX_SHARED_BOARDS));
+      shared = shared.filter(x => !drop.has(x));
+    }
     const rows = shared.map(({ id, key, altKey, name, lastState, lastSeenAt, version, stopped, kept }) =>
       ({ id, key, altKey, name, lastState, lastSeenAt, version, stopped, kept }));
     // Over budget: the boards you looked at longest ago keep their link but not their last copy (a live board
@@ -2077,6 +2105,16 @@
     updateSyncBtn();
   }
   function stopSync(msg) {
+    // A pairing code shown but never used would otherwise stay valid for good. (Once a device has linked with
+    // it, it's that device's token, so it stays.)
+    const was = sync;
+    if (was && was.ownerToken && was.pending && relay) {
+      const r = relay;
+      r.listWriters(was).then(reply => {
+        const w = validWriters(reply).find(x => x.wid === was.pending.wid);
+        if (w && !w.used) return r.revokeWriter(was, w.wid);
+      }).catch(() => {});
+    }
     sync = null; saveSync();
     if (remote !== baseRemote) setRemote(baseRemote);
     updateSyncBtn();
@@ -2261,8 +2299,12 @@
   // Another tab turned sync on or off.
   window.addEventListener("storage", e => {
     if (e.key !== SYNC_KEY) return;
+    const was = sync;
     sync = loadSync();
-    if (sync) startSync(); else if (remote !== baseRemote) setRemote(baseRemote);
+    // Only a different channel or token needs a restart (the owner tab also saves here when it shows a code).
+    const same = was && sync && was.id === sync.id && was.token === sync.token && was.ownerToken === sync.ownerToken && remote !== baseRemote;
+    if (same) { /* nothing to restart */ }
+    else if (sync) startSync(); else if (remote !== baseRemote) setRemote(baseRemote);
     updateSyncBtn();
   });
 
@@ -2299,6 +2341,7 @@
     return viewing && stack.length && stack[stack.length - 1].label !== COPY_LABEL && blocked();
   }
   function undo() {
+    if (toastAction && toastAction.notInHistory && $("toast").classList.contains("show")) { toastAction(); return; }
     if (undoBlocked(past)) return;
     const step = past.pop();
     if (!step) { toast("Nothing to undo"); return; }
@@ -2350,15 +2393,16 @@
       if (focusLane && !typing) { setFocus(focusLane); return; }
     }
     if (typing || e.defaultPrevented) return;
-    if (e.key === "`" && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); toggleBoards(); return; }
+    const panelOpen = panel.classList.contains("open"); // the Done panel is modal: board shortcuts wait
+    if (e.key === "`" && !e.metaKey && !e.ctrlKey && !e.altKey && !panelOpen) { e.preventDefault(); toggleBoards(); return; }
     if (e.key === "/") { e.preventDefault(); if (!blocked()) input.focus(); return; }
     // A: add the newest suggestion to P1, from anywhere on the board, a focused todo or card included.
-    if ((e.key === "a" || e.key === "A") && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && !viewing && trayList().length && !e.target.closest?.(".menu")) {
-      e.preventDefault(); addSession(trayList()[0].id, "h"); return;
+    if ((e.key === "a" || e.key === "A") && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && !viewing && !panelOpen && trayList().length && !e.target.closest?.(".menu")) {
+      e.preventDefault(); if (!e.repeat) addSession(trayList()[0].id, "h"); return;
     }
     if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.target.closest?.("li[data-id], li[data-session], .menu")) {
       const card = hoveredCard();
-      if (card && trayAction(card, e.key, true)) { e.preventDefault(); return; }
+      if (card && trayAction(card, e.key, true, e.repeat)) { e.preventDefault(); return; }
       const li = hoveredRow();
       if (li && rowAction(li, e.key, true)) { e.preventDefault(); return; }
       if ((e.key === "f" || e.key === "F") && ptr) {

@@ -193,7 +193,8 @@ export class Channel extends DurableObject<Env> {
     const isOwner = !!role?.owner;
     const canWrite = !!role; // owner or a paired writer
     const canRead = kind === "share" || (kind === "inbox" ? isOwner : canWrite);
-    if (role) await this.touch();
+    // Watching a shared board counts as using it, so a link people still open doesn't expire after 90 days.
+    if (role || (kind === "share" && m === "GET")) await this.touch();
     // A paired sync device reads more than it writes, so any request counts as "last seen" (shown when unlinking).
     if (kind === "sync" && role && !role.owner) {
       const now = Date.now();

@@ -31,9 +31,9 @@ curl -s $R/c/$ID -H "Authorization: Bearer $OWNER"                            # 
 
 ## Deploy
 
-`.github/workflows/relay.yml` runs the tests and `wrangler deploy` on every push to `main` that touches `relay/`. It needs two repo secrets (**Settings → Secrets and variables → Actions**):
+`.github/workflows/relay.yml` runs the tests and `wrangler deploy` on every push to `main` that touches `relay/`. The deploy job runs in a GitHub environment called `relay`. Create it under **Settings → Environments**, limit its deployment branches to `main`, and add two environment secrets there (repo secrets also work, but any workflow on any branch could read those):
 
-- `CLOUDFLARE_API_TOKEN`: a token made from the **Edit Cloudflare Workers** template.
+- `CLOUDFLARE_API_TOKEN`: a token made from the **Edit Cloudflare Workers** template. Better still, a custom token with only *Workers Scripts: Edit* on your account.
 - `CLOUDFLARE_ACCOUNT_ID`: from the Cloudflare dashboard's Workers overview.
 
 The relay then lives at `https://todos-relay.<your-subdomain>.workers.dev`. Put that in `relayBase` in `public/config.js`, and its `https://` and `wss://` origins in the CSP's `connect-src` in `public/index.html`. Everything fits the Workers free plan (SQLite-backed Durable Objects, 100,000 requests a day); past a limit, requests fail until 00:00 UTC rather than costing money.
@@ -59,7 +59,7 @@ Tokens go in `Authorization: Bearer <token>`. A browser can't set headers on a W
 | `POST /c` `{ kind }` | anyone (10 a minute per IP) | Creates a channel. `201 { id, kind, ownerToken }` |
 | `GET /c/:id` | `share`: anyone. `inbox`: owner. `sync`: owner or writer | `inbox`: `{ kind, messages: [{ id, data, at, wid }] }`. Others: `{ kind, version, data }` |
 | `GET /c/:id` with `Upgrade: websocket` | same | Sends what's there now, then every change (see below) |
-| `PUT /c/:id/state` `{ data }`, optional `If-Match: <version>` | `share`: owner. `sync`: owner or writer | Replaces the state. `200 { version }`, or `409 { version }` if `If-Match` is stale |
+| `PUT /c/:id/state` `{ data }`, optional `If-Match: <version>` | `share`: owner. `sync`: owner or writer | Replaces the state. `200 { version }`, or `409 { version }` if `If-Match` is stale (it takes the bare version number, quoted or not; `*` and weak tags aren't supported) |
 | `POST /c/:id/messages` `{ data }` | `inbox` writers | Appends a message. `201 { id }` |
 | `DELETE /c/:id/messages/:mid` | owner | Removes a handled message, and tells the owner's open sockets. `204` |
 | `POST /c/:id/writers` | owner (`inbox`, `sync`) | Pairs a machine or device. `201 { wid, token, created }`, or `409` at 50 |
@@ -77,9 +77,10 @@ Errors are `{ error }` with `400` (bad request), `401` (missing or wrong token),
 - An inbox keeps the newest 500 messages; older ones are dropped.
 - Writes (`PUT state`, `POST messages`, `POST writers`): bursts of 5, then 2 a second per channel.
 - Up to 50 paired machines or devices per channel.
-- 10 new channels a minute per IP address.
+- 10 new channels a minute per IP address (per /64 for IPv6, since one host usually has a whole /64).
 - Anonymous reads and WebSockets on `share` channels aren't throttled beyond Cloudflare's own limits.
-- A channel nobody has used for 90 days deletes itself (Durable Object alarm).
+- A channel nobody has used for 90 days deletes itself (Durable Object alarm). Viewing a shared board counts as using it.
+- Accepted risk: someone creating channels steadily from many addresses could fill the free plan's storage, and the relay would stay full until those channels expire. Watch the account's storage graph if the relay is public.
 
 ## Security
 
