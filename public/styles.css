@@ -459,7 +459,7 @@ kbd {
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .viewbar, :root:not([data-theme="light"]) .view-btn { color: #17112a; } }
 :root[data-theme="dark"] .viewbar, :root[data-theme="dark"] .view-btn { color: #17112a; }
 .viewing .composer, .viewing .multi, .viewing .clip-offer, .viewing .tray, .viewing .keys > span:not(.status, .view-keys),
-.viewing .keys .clip-toggle, .viewing #clearDone { display: none; }
+.viewing .keys .clip-toggle:not(.share-on), .viewing #clearDone { display: none; }
 .viewing .lane { border-color: color-mix(in srgb, var(--view) 30%, var(--rule)); }
 .viewing .items li { cursor: default; }
 .viewing .text { cursor: text; user-select: text; }
@@ -489,12 +489,12 @@ kbd {
 .opts { border: 0; margin: 12px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; }
 .opts legend { font-weight: 600; font-size: 13.5px; padding: 0; margin-bottom: 4px; width: 100%; }
 .opts label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
-.dialog .warn { margin: 14px 0 10px; padding: 8px 10px; border-radius: 8px; background: var(--view-soft); font-size: 13px; }
+.dialog .warn { margin: 14px 0 10px; padding: 8px 10px; border-radius: 8px; background: var(--pen-soft); font-size: 13px; }
 .dialog-acts { gap: 6px; }
 .shares li { flex-wrap: wrap; gap: 2px 6px; }
 .shares .machine small { display: block; }
 .shares button.confirm { color: var(--danger); }
-.keys .share-on { color: var(--view); font-weight: 600; }
+.keys .share-on { color: var(--pen); font-weight: 600; }
 
 /* Device sync */
 .dialog .dialog-acts.start { justify-content: flex-start; margin: 4px 0 6px; }
