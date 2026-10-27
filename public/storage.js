@@ -81,11 +81,22 @@
   const byPos = (a, b) => (!!a.deleted - !!b.deleted) || (a.deleted ? 0 : a.pos - b.pos) || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
   // Merges two lists of validated records (todos and tombstones): union by id, last writer wins per todo, and
   // tombstones older than 30 days are dropped. Order-independent: merge(a, b) and merge(b, a) are the same list.
+  // A linked Claude session's status isn't an edit of the todo, so `session` goes by its own `updatedAt`: the
+  // newer status wins whichever copy of the todo does.
+  function newerSession(r, cur) {
+    const x = r.session, y = cur.session;
+    if (!x || !y || x.id !== y.id || x.updatedAt === y.updatedAt) return x && y && x.id === y.id && canon(x) > canon(y);
+    return x.updatedAt > y.updatedAt;
+  }
   function merge(a, b, now = Date.now()) {
     const best = new Map();
     for (const r of a.concat(b)) {
       const cur = best.get(r.id);
-      if (!cur || newer(r, cur)) best.set(r.id, r);
+      if (!cur) { best.set(r.id, r); continue; }
+      let win = newer(r, cur) ? r : cur;
+      const lose = win === r ? cur : r;
+      if (!win.deleted && !lose.deleted && newerSession(lose, win)) win = Object.assign({}, win, { session: lose.session });
+      best.set(r.id, win);
     }
     return [...best.values()].filter(r => !(r.deleted && now - r.updated > TOMB_TTL)).sort(byPos);
   }
@@ -107,6 +118,8 @@
       if (!st || st === 429 || st >= 500) return unavailable("HTTP " + (st || "network"));
       return e;
     };
+    // A list that can't be read (corrupt, or the wrong key) is treated as empty, so the next save replaces it:
+    // there's nothing in it this device could keep.
     async function open(data) {
       if (!data) return [];
       try { return decode((await TodoRelay.decrypt(channel.key, data, MAX_SYNC_PLAIN)).items); } catch { return null; }

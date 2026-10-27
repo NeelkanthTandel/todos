@@ -335,6 +335,11 @@
     await deliver(ev("suggest", "sess-2", { title: "Write the release notes" }));
     c = cardFor("sess-2"); c.focus(); key(c, "Escape");
     check("Esc dismisses it", !cardFor("sess-2") && !shown($("tray")));
+    check("…with Undo in the toast", $("toastMsg").textContent === "Suggestion dismissed" && shown($("undo")));
+    $("undo").click();
+    check("Undo brings the suggestion back", !!cardFor("sess-2") && shown($("tray")));
+    c = cardFor("sess-2"); c.focus(); key(c, "Delete");
+    check("Delete dismisses it too", !cardFor("sess-2"));
     await deliver(ev("running", "sess-2"));
     check("a dismissed suggestion stays dismissed", !cardFor("sess-2"));
 
@@ -373,10 +378,19 @@
     edit.value = "Look at the API rate limits"; edit.dispatchEvent(new (win().Event)("input", { bubbles: true }));
     key(edit, "Enter");
     check("E edits the title, then Enter adds it", rows("h").includes("Look at the API rate limits") && todoFor("sess-6").session.project === "api");
+    await deliver(ev("suggest", "sess-9", { title: "Fix \u202ethe bug\u2066", project: "we\u200fb" }));
+    check("titles and projects lose bidirectional control characters", cardFor("sess-9").querySelector(".tray-title").textContent === "Fix the bug" &&
+      cardFor("sess-9").querySelector(".tray-meta").textContent.includes("web"), cardFor("sess-9").textContent);
+    await deliver(ev("suggest", "sess-10", { title: "Added from a focused row" }));
+    $("new").focus(); key($("new"), "a");
+    check("A while typing in the composer adds nothing", !rows("h").includes("Added from a focused row"));
+    const focusRow = doc().querySelector("#list-h li[data-id] .text");
+    focusRow.focus(); key(focusRow, "a");
+    check("A works with a todo focused", rows("h").includes("Added from a focused row") && !cardFor("sess-10"));
 
     await load(); await sleep(100);
     win().dispatchEvent(new (win().CustomEvent)("todos:relay-seam", { detail: { base: "https://relay.test", fetch: fakeFetch, WebSocket: FakeSocket } }));
-    check("suggestions and badges survive a reload", !!cardFor("sess-5") && doc().querySelectorAll(".board .sess").length === 3);
+    check("suggestions and badges survive a reload", !!cardFor("sess-5") && doc().querySelectorAll(".board .sess").length === 4);
 
     // Pairing: the dialog shows a /todos:connect command holding this inbox, the key and a new writer token.
     relayCalls.length = 0;
@@ -411,15 +425,47 @@
       /^[\w-]{43}$/.test(made.key) && !relayCalls.join(" ").includes(made.key) && sock.url.endsWith("/c/BBBBBBBBBBBBBBBBBBBBBB"), JSON.stringify([relayCalls, made, sock.url]));
     $("claudeClose").click();
 
+    // The relay forgot the inbox (unused for 90 days): Connect makes a new one, and a dropped socket notices.
+    const gone = new Set(["BBBBBBBBBBBBBBBBBBBBBB"]);
+    let nextInbox = "CCCCCCCCCCCCCCCCCCCCCC";
+    async function goneFetch(url, init) {
+      if (init.method === "POST" && url.endsWith("/c")) { relayCalls.push("POST /c"); return new Response(JSON.stringify({ id: nextInbox, kind: "inbox", ownerToken: "owner-token" }), { status: 201 }); }
+      if ([...gone].some(id => url.includes("/c/" + id))) return new Response('{"error":"no such channel"}', { status: 404 });
+      return fakeFetch(url, init);
+    }
+    await load(); await sleep(100);
+    relayCalls.length = 0;
+    win().dispatchEvent(new (win().CustomEvent)("todos:relay-seam", { detail: { base: "https://relay.test", fetch: goneFetch, WebSocket: FakeSocket } }));
+    $("claudeBtn").click();
+    await waitFor(() => JSON.parse(localStorage.getItem("todos.inbox") || "{}").id === nextInbox && $("claudeCmd").textContent.startsWith("/todos:connect "));
+    check("Connect replaces an inbox the relay no longer has", JSON.parse(localStorage.getItem("todos.inbox") || "{}").id === nextInbox && $("claudeErr").hidden &&
+      relayCalls.includes("POST /c") && sock.url.endsWith("/c/" + nextInbox), JSON.stringify(relayCalls));
+    $("claudeClose").click();
+    gone.add(nextInbox);
+    sock.onclose({ code: 1006 });
+    await waitFor(() => !localStorage.getItem("todos.inbox"));
+    check("a dropped socket to a gone inbox forgets it", !localStorage.getItem("todos.inbox"));
+
     // Imported session links go through normalize() like everything else.
     await importFile(JSON.stringify({ items: [
       { id: "s1", text: "linked", done: false, prio: "l", created: 1, session: { id: "abc", state: "needs_you", project: "web", kind: "cloud", updatedAt: 5, extra: 1 } },
       { id: "s2", text: "bad link", done: false, prio: "l", created: 2, session: { id: "<script>", state: "running" } },
       { id: "s3", text: "odd state", done: false, prio: "l", created: 3, session: { id: "def", state: "hacked", project: 7 } },
+      { id: "s4", text: "clock ahead", done: false, prio: "l", created: 4, session: { id: "ghi", state: "needs_you", project: "web", kind: "local", updatedAt: 9e15 } },
     ] }));
     const s1 = stored().find(t => t.id === "s1"), s2 = stored().find(t => t.id === "s2"), s3 = stored().find(t => t.id === "s3");
     check("normalize() keeps valid session links and drops bad ones", JSON.stringify(s1.session) === '{"id":"abc","state":"needs_you","project":"web","kind":"cloud","updatedAt":5}' &&
       !("session" in s2) && s3.session.state === "ended" && s3.session.project === "", JSON.stringify([s1, s2, s3]));
+    check("a session time in the future is clamped to now, so later statuses still apply", stored().find(t => t.id === "s4").session.updatedAt <= Date.now());
+
+    // Another tab writes the same list back with its fields in another order: nothing changed, so undo still works.
+    type("Two tabs open");
+    [...doc().querySelectorAll("li[data-id]")].find(x => x.querySelector(".text").textContent === "Two tabs open").querySelector(".check").click();
+    const writeBack = JSON.stringify(stored().map(t => Object.fromEntries(Object.entries(t).reverse())));
+    localStorage.setItem("todos.v1", writeBack);
+    win().dispatchEvent(new (win().StorageEvent)("storage", { key: "todos.v1", newValue: writeBack }));
+    key(doc().body, "z", { ctrlKey: true });
+    check("another tab writing the same list back doesn't wipe undo", stored().find(t => t.text === "Two tabs open").done === false, $("toastMsg").textContent);
 
     // ---------- live sharing: your side ----------
     await blank();
@@ -786,7 +832,7 @@
     const bigLanes = n => [Array.from({ length: 400 }, (_, i) => ({ t: n + "-" + i + " " + "y".repeat(490) })), [], [], []];
     const ids6 = [1, 2, 3, 4, 5, 6].map(n => String(n).repeat(22));
     const keys6 = ids6.map(() => win().TodoRelay.newKey());
-    localStorage.setItem("todos.shared", JSON.stringify(ids6.map((id, i) => ({ id, key: keys6[i], name: "B" + i, lastState: { v: 1, name: "B" + i, at: 1, lanes: bigLanes(i) }, lastSeenAt: 10 + i, version: 1 }))));
+    localStorage.setItem("todos.shared", JSON.stringify(ids6.map((id, i) => ({ id, key: keys6[i], name: "B" + i, lastState: { v: 1, name: "B" + i, at: 1, lanes: bigLanes(i) }, lastSeenAt: 10 + i, version: 1, kept: i === 1, stopped: i === 1 }))));
     localStorage.setItem("todos.shares", JSON.stringify([{ id: SHARE_ID, key: win().TodoRelay.newKey(), ownerToken: "share-owner", relay: "https://relay.test", name: "Me", options: {}, createdAt: 1 }]));
     const ATTACKER = win().TodoRelay.newKey();
     socks.length = 0;
@@ -794,8 +840,9 @@
     await sleep(50);
     const kept6 = JSON.parse(localStorage.getItem("todos.shared"));
     check("saved shared boards stay within about 2 MB, oldest copies dropped first", localStorage.getItem("todos.shared").length <= 1e6 &&
-      kept6[0].lastState && !kept6[1].lastState && kept6[5].lastState, localStorage.getItem("todos.shared").length + " " + kept6.map(x => !!x.lastState).join());
-    check("a link with another key for a saved board doesn't replace its key or wipe it", kept6[0].key === keys6[0] && rows("h").length === 400);
+      kept6[0].lastState && kept6[1].lastState && !kept6[2].lastState && !kept6[3].lastState && kept6[5].lastState, localStorage.getItem("todos.shared").length + " " + kept6.map(x => !!x.lastState).join());
+    check("…and a copy you chose to keep is never dropped", kept6[1].kept && kept6[1].lastState);
+    check("a link with another key for a saved board doesn't replace its key or wipe it", kept6[0].key === keys6[0] && kept6[0].altKey === ATTACKER && rows("h").length === 400);
     seam();
     await waitFor(() => socks.length);
     const vsock6 = socks.find(s => s.url.endsWith(ids6[0]));
@@ -834,6 +881,11 @@
     check("merge: the same todo moved on both → the later move wins", texts(M(moveA1, moveA2, NOW)) === "B|C|A|D");
     const aged = M([{ id: "old", deleted: true, updated: NOW - 31 * DAY }, { id: "new", deleted: true, updated: NOW - 29 * DAY }], [], NOW);
     check("merge: tombstones expire after 30 days", aged.length === 1 && aged[0].id === "new");
+    const sx = (state, at) => ({ id: "x1", state, project: "p", kind: "local", updatedAt: T + at });
+    const edited = [rec("s", "S edited on the phone", 700, 1, { session: sx("running", 100) })], status = [rec("s", "S", 600, 1, { session: sx("needs_you", 800) })];
+    const ms = M(edited, status, NOW), ms2 = M(status, edited, NOW);
+    check("merge: a session status goes by its own time, so it doesn't undo an edit", ms[0].text === "S edited on the phone" && ms[0].session.state === "needs_you" &&
+      JSON.stringify(ms) === JSON.stringify(ms2), JSON.stringify(ms));
     const m1 = M(dev1, dev2, NOW);
     check("merge: merging again changes nothing", JSON.stringify(M(m1, m1, NOW)) === JSON.stringify(m1) && JSON.stringify(M(m1, dev1, NOW)) === JSON.stringify(m1));
 
@@ -1081,6 +1133,12 @@
     type("After the reconnect");
     await up;
     check("…and the next save keeps it on the relay", (await liveTexts()).includes("Saved while the socket was down") && (await liveTexts()).includes("After the reconnect"), await liveTexts());
+    const putsWB = relaySide.puts;
+    const wb = JSON.stringify(stored().map(t => Object.fromEntries(Object.entries(t).reverse())));
+    localStorage.setItem("todos.v1", wb);
+    win().dispatchEvent(new (win().StorageEvent)("storage", { key: "todos.v1", newValue: wb }));
+    await sleep(200);
+    check("another tab writing the same list back uploads nothing", relaySide.puts === putsWB, relaySide.puts - putsWB + " puts");
 
     // Linked devices and unlinking (on the device that started sync).
     relaySide.writers[0].used = Date.now();

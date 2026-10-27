@@ -47,6 +47,8 @@
   const SESSION_RE = /^[\w-]{1,64}$/;
   const STATES = { running: "Running", needs_you: "Needs you", your_turn: "Your turn", ended: "Ended" };
   // A todo added from a Claude Code session keeps a link to it: { id, state, project, kind, updatedAt }.
+  // Control and bidirectional formatting characters: stripped from names and titles so they can't reorder text.
+  const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
   function normSession(s) {
     if (!s || typeof s !== "object" || typeof s.id !== "string" || !SESSION_RE.test(s.id)) return null;
     return {
@@ -54,7 +56,7 @@
       state: Object.hasOwn(STATES, s.state) ? s.state : "ended",
       project: typeof s.project === "string" ? s.project.trim().slice(0, 120) : "",
       kind: s.kind === "cloud" ? "cloud" : "local",
-      updatedAt: num(s.updatedAt),
+      updatedAt: Math.min(num(s.updatedAt), Date.now()), // a clock running ahead can't pin a status forever
     };
   }
   function normalize(arr) {
@@ -108,7 +110,9 @@
   // Every save compares the list with the last one saved: a todo that changed gets a new `updated`, and one that's
   // gone leaves a tombstone. That covers every kind of change in one place, undo and redo included.
   let saved = new Map(); // id -> { sig, updated } as last saved or taken from elsewhere
-  const sigOf = t => { const { updated, ...rest } = t; return JSON.stringify(rest); };
+  // A session status change isn't an edit of the todo: device sync merges `session` by its own updatedAt
+  // (TodoStorage.merge), so it can't override a real edit made on another device.
+  const sigOf = t => { const { updated, session, ...rest } = t; return JSON.stringify(session ? [rest, session.id, session.project, session.kind] : rest); };
   function markSaved() { saved = new Map(items.map(t => [t.id, { sig: sigOf(t), updated: t.updated }])); }
   markSaved();
   function stamp() {
@@ -194,7 +198,8 @@
     queued = null;
     next = normalize(next);
     if (nextTombs) { tombs = nextTombs; lsSet(TOMBS_KEY, JSON.stringify(tombList())); }
-    if (JSON.stringify(next) === JSON.stringify(items)) { markSaved(); return; }
+    // The same todos with their fields in another order (another tab's write-back) is no change: keep undo.
+    if (JSON.stringify(next) === JSON.stringify(items) || (window.TodoStorage && TodoStorage.sameDoc(next, items))) { markSaved(); return; }
     const ed = editingId && $("edit-" + editingId);
     const draft = ed && [ed.value, ed.selectionStart, ed.selectionEnd];
     if (editingId && !next.some(t => t.id === editingId)) editingId = null;
@@ -272,13 +277,13 @@
     try { next = JSON.parse(e.newValue || "[]"); } catch { return; }
     try { t = normTombs(JSON.parse(lsGet(TOMBS_KEY) || "[]")); } catch {}
     // With device sync every todo carries its change time, so the two tabs' lists merge, even while this tab is
-    // still saving or offline. Anything only this tab had goes out with its next save.
+    // still saving or offline.
+    // Nothing is uploaded from here: the other tab uploads its own changes, and if it can't (offline, then closed),
+    // they're in this tab's list now and go up with this tab's next save, retry or reload.
     if (remote && remote.merges) {
-      const had = JSON.stringify(docRecords());
+      const was = dirty;
       takeRemote(decodeDoc(Array.isArray(next) ? next.concat([...(t || [])].map(([id, updated]) => ({ id, deleted: true, updated }))) : []));
-      // The other tab may close before it's back online, so whatever it added goes up from here too.
-      if (JSON.stringify(docRecords()) !== had) dirty = true;
-      if (dirty && docRef) { setStatus("Saving…"); flush(); }
+      dirty = was;
       return;
     }
     if (writing || dirty) return;
@@ -1124,8 +1129,8 @@
     return {
       event: m.event, sessionId: m.sessionId,
       at: Math.min(m.at, Date.now()), // a clock running ahead can't pin a status forever
-      project: (m.project || "").trim(), title: (m.title || "").replace(/\s+/g, " ").trim() || null,
-      kind: m.kind === "cloud" ? "cloud" : "local", machine: (m.machine || "").trim(),
+      project: (m.project || "").replace(CONTROL_RE, "").trim(), title: (m.title || "").replace(CONTROL_RE, "").replace(/\s+/g, " ").trim() || null,
+      kind: m.kind === "cloud" ? "cloud" : "local", machine: (m.machine || "").replace(CONTROL_RE, "").trim(),
     };
   }
 
@@ -1142,7 +1147,10 @@
         title: null, suggested: false, dismissed: false, added: false, startedAt: m.at };
       sessions.set(s.id, s);
     }
-    if (m.event === "suggest") { s.suggested = true; s.title = m.title || s.title; s.startedAt = m.at; }
+    if (m.event === "suggest") {
+      if (!s.suggested && !s.added && !s.dismissed && !viewing) announce("Claude session suggested: " + (m.title || "untitled session" + (m.project ? " in " + m.project : "")));
+      s.suggested = true; s.title = m.title || s.title; s.startedAt = m.at;
+    }
     // Hooks run in parallel, so messages can arrive out of order: the newest one decides the status.
     if (m.at >= s.updatedAt) {
       s.state = EVENT_STATE[m.event]; s.updatedAt = m.at; s.kind = m.kind;
@@ -1285,6 +1293,7 @@
     if (!s) return;
     if (trayEdit && trayEdit.id === id) trayEdit = null;
     s.dismissed = true; saveSessions(); renderTray();
+    toast("Suggestion dismissed", "Undo", () => { s.dismissed = false; sessions.set(s.id, s); saveSessions(); renderTray(); });
     announce("Suggestion dismissed");
   }
   // Card shortcuts, for a focused card and the card under the mouse (like rowAction for todos).
@@ -1351,14 +1360,20 @@
   }
   function follow() {
     if (sub) sub.close();
-    sub = relay.subscribe(inbox, onRelayEvent);
+    const ch = inbox;
+    sub = relay.subscribe(ch, onRelayEvent, st => {
+      // A socket can't say why it failed. If the relay no longer has this inbox (unused for 90 days, say), forget
+      // it, so the next Connect makes a new one instead of failing forever.
+      if (st === "closed") relay.listWriters(ch).catch(e => { if (e && e.status === 404 && inbox === ch) inboxGone(); });
+    });
+  }
+  function inboxGone() {
+    if (sub) { sub.close(); sub = null; }
+    inbox = null; lsSet(INBOX_KEY, "");
   }
   async function onRelayEvent(ev) {
-    if (ev.type === "deleted") { // the inbox is gone (expired): the next Connect makes a new one
-      if (sub) { sub.close(); sub = null; }
-      inbox = null; lsSet(INBOX_KEY, "");
-      return;
-    }
+    if (ev.type === "deleted") { inboxGone(); return; } // the inbox is gone (expired): the next Connect makes a new one
+    if (ev.type === "removed" && typeof ev.id === "string") { handled.add(ev.id); return; } // another tab handled it
     if (ev.type !== "message" || typeof ev.id !== "string" || !/^[\w-]{1,32}$/.test(ev.id) || handled.has(ev.id)) return;
     if (handled.size > 2000) handled.clear();
     handled.add(ev.id);
@@ -1369,7 +1384,9 @@
     }
     if (m && ch === inbox) applyMessage(m, typeof ev.wid === "string" ? ev.wid : "");
     // Handled, or junk we'll never be able to read: either way it's done.
-    if (ch) relay.deleteMessage(ch, ev.id).catch(() => {});
+    if (ch) relay.deleteMessage(ch, ev.id).catch(() => { // try once more, or it comes back after a reload
+      setTimeout(() => { if (relay && inbox === ch) relay.deleteMessage(ch, ev.id).catch(() => {}); }, 30e3);
+    });
     window.dispatchEvent(new Event("todos:relaymsg")); // lets tests/smoke.html know a message was handled
   }
   // Another tab of this browser may have handled messages or made the inbox.
@@ -1379,6 +1396,7 @@
       const next = loadInbox();
       if (next && next.relay === relay.base && (!inbox || inbox.id !== next.id)) { inbox = next; follow(); }
       else if (next && inbox && next.id === inbox.id) inbox = next;
+      else if (!next && inbox) { if (sub) { sub.close(); sub = null; } inbox = null; }
     }
   });
 
@@ -1392,11 +1410,17 @@
     saveInbox(); follow();
     return inbox;
   }
-  async function refreshDialog() {
+  async function refreshDialog(again) {
     $("claudeErr").hidden = true;
     try {
       const ch = await ensureInbox();
-      const reply = await relay.listWriters(ch);
+      let reply;
+      try { reply = await relay.listWriters(ch); }
+      catch (e) {
+        // The relay has forgotten this inbox: start a new one (machines connected to the old one must reconnect).
+        if (e && e.status === 404 && !again && inbox === ch) { inboxGone(); return refreshDialog(true); }
+        throw e;
+      }
       const writers = (reply && Array.isArray(reply.writers) ? reply.writers : [])
         .filter(w => w && typeof w.wid === "string" && /^[\w-]{1,32}$/.test(w.wid));
       // One code per machine: reuse the shown code until a machine has connected with it.
@@ -1469,7 +1493,7 @@
   const CHANNEL_RE = /^[\w-]{22}$/, KEY_RE = /^[\w-]{43}$/;
   const SHARE_DEBOUNCE = 1000;
   // No control or bidirectional formatting characters: a name must not be able to reorder the banner around it.
-  const cleanName = n => (typeof n === "string" ? n.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+  const cleanName = n => (typeof n === "string" ? n.replace(CONTROL_RE, "")
     .replace(/\s+/g, " ").trim().slice(0, 40) : "");
   const possessive = n => (n || "Someone") + "'s";
   function normOptions(o) {
@@ -1704,20 +1728,21 @@
         if (!x || !CHANNEL_RE.test(x.id) || !KEY_RE.test(x.key) || out.some(s => s.id === x.id)) continue;
         const lastState = normShare(x.lastState);
         out.push({ id: x.id, key: x.key, name: cleanName(x.name) || (lastState ? lastState.name : ""), lastState,
-          lastSeenAt: num(x.lastSeenAt), version: num(x.version), stopped: x.stopped === true, kept: x.kept === true });
+          lastSeenAt: num(x.lastSeenAt), version: num(x.version), stopped: x.stopped === true, kept: x.kept === true,
+          altKey: KEY_RE.test(x.altKey) && x.altKey !== x.key ? x.altKey : undefined });
       }
     } catch {}
     return out;
   }
   let shared = loadShared(), viewSub = null, viewStatus = "offline";
   function saveShared() {
-    const rows = shared.map(({ id, key, name, lastState, lastSeenAt, version, stopped, kept }) =>
-      ({ id, key, name, lastState, lastSeenAt, version, stopped, kept }));
+    const rows = shared.map(({ id, key, altKey, name, lastState, lastSeenAt, version, stopped, kept }) =>
+      ({ id, key, altKey, name, lastState, lastSeenAt, version, stopped, kept }));
     // Over budget: the boards you looked at longest ago keep their link but not their last copy (a live board
-    // fetches it again when you open it). The one on screen and copies you chose to keep go last.
+    // fetches it again when you open it). The one on screen and copies you chose to keep are never cut.
     let size = JSON.stringify(rows).length;
-    const cut = rows.filter(r => r.lastState && !(viewing && viewing.id === r.id))
-      .sort((a, b) => (a.kept - b.kept) || (a.lastSeenAt - b.lastSeenAt));
+    const cut = rows.filter(r => r.lastState && !r.kept && !(viewing && viewing.id === r.id)) // a kept copy is all there is
+      .sort((a, b) => a.lastSeenAt - b.lastSeenAt);
     while (size > SHARED_BUDGET && cut.length) {
       const r = cut.shift();
       size -= JSON.stringify(r.lastState).length - 4; r.lastState = null;
@@ -1995,12 +2020,16 @@
   window.addEventListener("storage", e => {
     if (e.key === SHARES_KEY) { shares = loadShares(); updateShareStatus(); return; }
     if (e.key !== SHARED_KEY) return;
-    const id = viewing && viewing.id;
+    const prev = viewing;
     shared = loadShared();
-    if (id) {
-      const x = sharedById(id);
-      if (!x) { viewing = { id }; viewMine(); }
-      else { viewing = x; x.items = sharedItems(x.lastState); render(); renderBanner(); }
+    if (prev) {
+      const x = sharedById(prev.id);
+      if (!x) { viewing = { id: prev.id }; viewMine(); }
+      else {
+        // Another tab may have trimmed this board's stored copy to save space: keep the one on screen.
+        if (!x.lastState && prev.lastState) x.lastState = prev.lastState;
+        viewing = x; x.items = sharedItems(x.lastState); render(); renderBanner();
+      }
     }
     renderSwitcher();
   });
@@ -2322,12 +2351,15 @@
     if (typing || e.defaultPrevented) return;
     if (e.key === "`" && !e.metaKey && !e.ctrlKey && !e.altKey) { e.preventDefault(); toggleBoards(); return; }
     if (e.key === "/") { e.preventDefault(); if (!blocked()) input.focus(); return; }
+    // A: add the newest suggestion to P1, from anywhere on the board, a focused todo or card included.
+    if ((e.key === "a" || e.key === "A") && !e.shiftKey && !e.metaKey && !e.ctrlKey && !e.altKey && !viewing && trayList().length && !e.target.closest?.(".menu")) {
+      e.preventDefault(); addSession(trayList()[0].id, "h"); return;
+    }
     if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.target.closest?.("li[data-id], li[data-session], .menu")) {
       const card = hoveredCard();
       if (card && trayAction(card, e.key, true)) { e.preventDefault(); return; }
       const li = hoveredRow();
       if (li && rowAction(li, e.key, true)) { e.preventDefault(); return; }
-      if ((e.key === "a" || e.key === "A") && !e.shiftKey && !viewing && trayList().length) { e.preventDefault(); addSession(trayList()[0].id, "h"); return; }
       if ((e.key === "f" || e.key === "F") && ptr) {
         const lane = document.elementFromPoint(ptr.x, ptr.y)?.closest(".board .lane");
         if (lane) { e.preventDefault(); setFocus(lane.dataset.prio); }
