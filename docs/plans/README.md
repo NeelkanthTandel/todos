@@ -1,12 +1,13 @@
 # Plans
 
-Three features, built **one at a time, in this order**. Each depends on the one before it.
+Three features, built **one at a time, in this order**. Each depends on the one before it. The Mac app (4) wraps the website, so it gets each feature as it lands.
 
 | # | Milestone | Plan | Status |
 | --- | --- | --- | --- |
 | 1 | Encrypted relay + Claude Code session suggestions | [01-relay-and-claude-suggestions.md](01-relay-and-claude-suggestions.md) | In review (1a, 1b and 1c in one PR) |
 | 2 | Live sharing (read-only for viewers) | [02-live-sharing.md](02-live-sharing.md) | Not started |
 | 3 | Syncing your own list across devices | [03-device-sync.md](03-device-sync.md) | Not started |
+| 4 | Mac app (Swift shell around the web UI, ⌥ Space) | [04-mac-app.md](04-mac-app.md) | In review (stacked on milestone 1; rebase once 2 and 3 land) |
 
 Update the **Status** column in the PR that finishes a milestone (or a step of one).
 

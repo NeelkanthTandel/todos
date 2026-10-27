@@ -22,9 +22,10 @@
 - **Undo anything** with `Ctrl/⌘+Z`, redo with `Ctrl/⌘+Shift+Z`: adds, deletes, moves, edits, imports, clearing Done.
 - **Keyboard first.** Shortcuts work on the focused todo, or on the one under your mouse.
 - **Export as plain text** to paste anywhere (copy or `.txt`), or **export and import** a JSON backup to move between browsers or devices.
-- **Clipboard suggestions** (Chrome, Edge, Brave; off until you turn them on). Copy something, come back to Todos, and it's waiting in the box, selected: `Enter` adds it; `Backspace`, `Esc` or typing dismisses it; `Tab` keeps it to edit. Anything that looks like a password, API key, token, database URL with credentials, one-time code or card number is never suggested, and copies older than 10 minutes are ignored. Turn it on or off from the footer.
+- **Clipboard suggestions** (Chrome, Edge, Brave and the Mac app; off until you turn them on). Copy something, come back to Todos, and it's waiting in the box, selected: `Enter` adds it; `Backspace`, `Esc` or typing dismisses it; `Tab` keeps it to edit. Anything that looks like a password, API key, token, database URL with credentials, one-time code or card number is never suggested, and copies older than 10 minutes are ignored. Turn it on or off from the footer.
 - **Claude Code sessions as suggestions** (optional). Connect Claude Code and each new session shows up above the board; one key adds it, and the todo follows the session's status. End-to-end encrypted. See [Claude Code integration](#claude-code-integration).
 - **Light and dark**, following your system. Works on phones.
+- **A Mac app** that opens and hides with `⌥ Space` from anywhere. Under 1 MB. See [Mac app](#mac-app).
 - **Private.** No accounts, analytics, trackers or third-party requests. It's a static page; your list never leaves your browser. (The optional Claude Code integration goes through this project's own relay, encrypted end to end.)
 
 ## Keyboard shortcuts
@@ -103,6 +104,26 @@ By default everything lives in your browser's `localStorage`:
 ```
 
 **Import** reads that file, or a bare array of todos, and merges by `id`. A todo in the file replaces the same todo on the board, and everything else is kept. One `Ctrl/⌘+Z` undoes the whole import. Files over 2 MB or 5,000 todos are refused.
+
+## Mac app
+
+The same board as a Mac app, under 1 MB, with one extra: **`⌥ Space` (Option+Space) shows and hides it from anywhere.** It looks and works exactly like the website, because it is the website: a small Swift shell around the files in `public/`. macOS 14 or later, Apple Silicon or Intel.
+
+**Install**
+
+1. Download **Todos.dmg** from the [latest Mac release](https://github.com/NeelkanthTandel/todos/releases), open it and drag **Todos** to **Applications**.
+2. The app isn't notarized by Apple yet, so macOS blocks it the first time. Open Todos, and when macOS says it can't verify the app, click **Done**. Then open **System Settings › Privacy & Security**, scroll to **Security**, click **Open Anyway** next to Todos, confirm with your password or Touch ID, and click **Open**. You only do this once. Prefer the Terminal? `xattr -dr com.apple.quarantine /Applications/Todos.app`
+
+**Using it**
+
+- **`⌥ Space`** brings the board forward from any app; press it again to hide it and go back to what you were doing. Todos takes over Option+Space system-wide while it runs, so another app using that shortcut (some launchers, or a keyboard layout's non-breaking space) won't get it. Quit Todos (`⌘Q`) to give it back.
+- Closing the window (`⌘W`) only hides it. Todos keeps running so the shortcut keeps working; click its Dock icon or press `⌥ Space` to bring it back.
+- **Clipboard suggestions** work in the app too, and it never reads copies a password manager marks as concealed.
+- Export saves wherever you choose; Import opens a file picker. Links open in your browser.
+
+**Your list in the app is separate** from the one in your browser: each keeps its own. To have one list everywhere, link them with **device sync** once it's available, or move it once with Export and Import.
+
+**Build it yourself** (needs Xcode 16 or later): `cd mac && make app` builds `mac/build/Todos.app`, `make test` runs the tests, and `make dmg` makes the disk image. Pushing a `mac-v1.2.3` tag publishes a release. Details: [`docs/plans/04-mac-app.md`](docs/plans/04-mac-app.md).
 
 ## Run it yourself
 

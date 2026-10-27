@@ -13,6 +13,7 @@ A heat-lane todo board: a static site in `public/`, live at https://todos.always
 - One topic per PR. Merge only when the repo owner says so, using a merge commit.
 - Commit as the repo's configured identity (the GitHub noreply address); never use a personal or work email.
 - **Tests:** `tests/run.sh` runs `tests/smoke.html` in headless Chrome (`CHROME=/path`, plus `CHROME_FLAGS=--no-sandbox` as root in a container). Also run `node --check public/*.js` and `npx --yes html-validate@11.16.2 public/index.html tests/smoke.html`.
+- **Mac app (`mac/`):** a Swift shell that bundles `public/` as is. `cd mac && make lint test app`; `TODOS_SELFTEST=<dir> build/Todos.app/Contents/MacOS/Todos` checks the built app. Keep web features inside `public/` so the app gets them for free.
 
 ## Code rules (`public/`)
 
