@@ -94,11 +94,13 @@
   // ---------- device sync over the relay ----------
   // A `sync` channel holds the whole list (todos and tombstones), encrypted: data = { v: 1, items }. Saving sends
   // If-Match with the version this device last saw; on 409 it reads the newer list, merges and tries again.
+  // Every save also merges in the last list it saw (`seen`), so a save can never overwrite a version this device
+  // has read but the page hasn't taken in yet (say, mid-drag, or while the page was busy).
   // `decode` validates a decrypted list (app.js's normalize) and must return records ready for merge().
   // Errors: code "unavailable" (offline, rate-limited: retry), code "gone" (unlinked or deleted: stop).
   const MAX_SYNC_PLAIN = 8e6;
   function relaySync({ client, channel, decode, sleep = ms => new Promise(r => setTimeout(r, ms)) }) {
-    let version = 0;
+    let version = 0, seen = [];
     const fail = e => {
       const st = e && e.status;
       if (st === 401 || st === 404) return Object.assign(new Error("gone"), { code: "gone", status: st });
@@ -109,11 +111,18 @@
       if (!data) return [];
       try { return decode((await TodoRelay.decrypt(channel.key, data, MAX_SYNC_PLAIN)).items); } catch { return null; }
     }
+    // Takes a list from the relay if it's newer than the one we have; `fresh` says whether it was.
+    function take(v, items) {
+      if (v <= version) return false; // ours, or one we've already read (or an older one that finished late)
+      version = v; seen = items;
+      return true;
+    }
     async function read() {
       let r;
       try { r = await client.getState(channel); } catch (e) { throw fail(e); }
-      version = Number(r && r.version) || 0;
-      return { items: (await open(r && r.data)) || [], version };
+      const v = Number(r && r.version) || 0, items = (await open(r && r.data)) || [];
+      const fresh = take(v, items);
+      return { items: fresh || v === version ? items : seen, version, fresh };
     }
     return {
       merges: true,
@@ -122,17 +131,19 @@
       async set({ items }) {
         let merged = false;
         for (let tries = 0; ; tries++) {
+          // If-Match is the version whose list is merged in here, taken together before anything waits.
+          const base = version, out = merge(items, seen);
+          if (!sameDoc(out, items)) { items = out; merged = true; }
           const data = await TodoRelay.encrypt(channel.key, { v: 1, items });
           try {
-            const r = await client.putState(channel, data, version);
-            version = Number(r && r.version) || version + 1;
+            const r = await client.putState(channel, data, base);
+            take(Number(r && r.version) || base + 1, items);
             return merged ? { items } : null;
           } catch (e) {
             if (!(e && e.status === 409) || tries >= 8) throw e && e.status === 409 ? unavailable("conflict") : fail(e);
           }
-          // Another device saved first: take its list, merge ours in, and try again.
-          items = merge(items, (await read()).items);
-          merged = true;
+          // Another device saved first: read its list (merged in at the top of the loop) and try again.
+          await read();
           await sleep(Math.min(5000, 100 * 2 ** tries) * (0.5 + Math.random()));
         }
       },
@@ -143,13 +154,16 @@
           if (ev.type !== "state" || typeof ev.data !== "string") return;
           const v = Number(ev.version) || 0;
           if (v <= version) { fn({ same: true }); return; } // ours, or one we've already read
-          version = v;
           const items = await open(ev.data);
-          fn(items ? { items, version: v } : { same: true });
+          // Only now does the version move on, together with the list it belongs to: a save in between still
+          // sends If-Match for the older version and gets a 409, instead of overwriting this list.
+          if (items && take(v, items)) fn({ items, version: v }); else fn({ same: true });
         }, (status, code) => {
           if (status !== "closed") return;
           if (code === 4001) { fn({ gone: true }); return; } // this device was unlinked
-          read().catch(e => { if (e && e.code === "gone") fn({ gone: true }); }); // a socket can't say why it failed
+          // A socket can't say why it failed, so ask. Anything saved while it was down comes back here.
+          read().then(r => { if (r.fresh) fn({ items: r.items, version: r.version }); },
+            e => { if (e && e.code === "gone") fn({ gone: true }); });
         });
         return () => sub.close();
       },

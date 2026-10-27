@@ -211,7 +211,9 @@
   function takeRemote(records) {
     const merged = TodoStorage.merge(docRecords(), records);
     adopt(merged.filter(r => !r.deleted), new Map(merged.filter(r => r.deleted).map(r => [r.id, r.updated])));
-    if (!TodoStorage.sameDoc(merged, records)) dirty = true;
+    // Compared after this device's own 30-day cut, so a tombstone that only another device (with a slower
+    // clock) still keeps doesn't count as a difference and get sent back and forth.
+    if (!TodoStorage.sameDoc(merged, TodoStorage.merge(records, []))) dirty = true;
   }
   async function connect() {
     const store = remote;
@@ -265,10 +267,22 @@
   if (remote) connect();
   // Another tab of this browser saved: pick up its list.
   window.addEventListener("storage", e => {
-    if (e.key !== LS_KEY || writing || dirty) return;
-    let t = null;
+    if (e.key !== LS_KEY) return;
+    let next, t = null;
+    try { next = JSON.parse(e.newValue || "[]"); } catch { return; }
     try { t = normTombs(JSON.parse(lsGet(TOMBS_KEY) || "[]")); } catch {}
-    try { adopt(JSON.parse(e.newValue || "[]"), t); } catch {}
+    // With device sync every todo carries its change time, so the two tabs' lists merge, even while this tab is
+    // still saving or offline. Anything only this tab had goes out with its next save.
+    if (remote && remote.merges) {
+      const had = JSON.stringify(docRecords());
+      takeRemote(decodeDoc(Array.isArray(next) ? next.concat([...(t || [])].map(([id, updated]) => ({ id, deleted: true, updated }))) : []));
+      // The other tab may close before it's back online, so whatever it added goes up from here too.
+      if (JSON.stringify(docRecords()) !== had) dirty = true;
+      if (dirty && docRef) { setStatus("Saving…"); flush(); }
+      return;
+    }
+    if (writing || dirty) return;
+    adopt(next, t);
   });
 
   // ---------- helpers ----------
@@ -2064,6 +2078,7 @@
   }
 
   let linking = null; // { code, records }: the synced list, while asking whether to merge or replace
+  let linkedCode = ""; // a code that arrived in a #sync= link: only linked once you confirm it's your own
   function syncError(msg) { $("syncErr").textContent = msg; $("syncErr").hidden = !msg; }
   function renderSyncDialog() {
     const on = !!sync;
@@ -2081,9 +2096,13 @@
     if (!relay) { toast("Sync needs the relay, which isn't set up on this site."); return; }
     linking = null; syncError("");
     $("syncPair").hidden = true; $("syncCode").value = code || "";
+    // A link can come from anyone, so it never links with one key press: it says what linking does and waits
+    // for you to confirm the code is yours.
+    linkedCode = code && !sync ? code : "";
+    $("syncFromLink").hidden = !linkedCode; $("syncMine").checked = false;
     renderSyncDialog();
     syncDlg.showModal();
-    (code && !sync ? $("syncLink") : sync ? $("syncClose") : $("syncStart")).focus();
+    (linkedCode ? $("syncMine") : sync ? $("syncClose") : $("syncStart")).focus();
   }
   $("syncBtn").addEventListener("click", () => openSyncDialog(""));
   $("syncClose").addEventListener("click", () => syncDlg.close());
@@ -2109,6 +2128,9 @@
     const raw = $("syncCode").value, p = parseSyncCode(raw);
     if (!p) { syncError("That isn't a pairing code. Copy it again from your other device."); return; }
     if (p.relay !== relay.base) { syncError("That code is for a different Todos relay."); return; }
+    if (linkedCode && raw.trim() === linkedCode && !$("syncMine").checked) {
+      syncError("Only link a code you made on your own device. Tick the box to confirm."); $("syncMine").focus(); return;
+    }
     const b = $("syncLink");
     b.disabled = true;
     try {

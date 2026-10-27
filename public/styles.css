@@ -504,3 +504,5 @@ kbd {
 .ghost-btn.danger:hover { color: var(--danger); }
 .dialog .dialog-acts { align-items: center; }
 #syncOffBtn { margin-right: auto; }
+.dialog .warn p { margin: 0 0 6px; }
+.dialog .warn label { display: flex; gap: 6px; align-items: center; font-weight: 600; }

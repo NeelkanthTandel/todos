@@ -135,6 +135,10 @@
     <h3>Already syncing on another device?</h3>
     <p class="muted">On that device, open <b>Sync across devices</b> and show a pairing code. Scan its QR code with this device's camera, or paste the code here.</p>
     <div class="cmd"><input type="text" class="text-field" id="syncCode" aria-label="Pairing code" autocomplete="off" spellcheck="false"><button type="button" class="clip-yes" id="syncLink">Link</button></div>
+    <div class="warn" id="syncFromLink" hidden>
+      <p>You opened a pairing link. Linking copies <b>your whole list</b> to whoever made it, and keeps sending them every change. Only link if you made this code on one of your own devices.</p>
+      <label><input type="checkbox" id="syncMine"> I made this code on my own device</label>
+    </div>
     <fieldset class="opts" id="syncChoice" hidden>
       <legend>This device has todos too</legend>
       <label><input type="radio" name="syncMode" id="syncMerge" value="merge" checked> Merge both lists</label>
