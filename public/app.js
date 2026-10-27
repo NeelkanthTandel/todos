@@ -278,12 +278,13 @@
     try { t = normTombs(JSON.parse(lsGet(TOMBS_KEY) || "[]")); } catch {}
     // With device sync every todo carries its change time, so the two tabs' lists merge, even while this tab is
     // still saving or offline.
-    // Nothing is uploaded from here: the other tab uploads its own changes, and if it can't (offline, then closed),
-    // they're in this tab's list now and go up with this tab's next save, retry or reload.
+    // Nothing new is uploaded from here: the other tab uploads its own changes, and if it can't (offline, then
+    // closed), they're in this tab's list now and go up with this tab's next save, retry or reload.
     if (remote && remote.merges) {
-      const was = dirty;
+      const was = dirty, before = docRecords();
       takeRemote(decodeDoc(Array.isArray(next) ? next.concat([...(t || [])].map(([id, updated]) => ({ id, deleted: true, updated }))) : []));
-      dirty = was;
+      // Mid-upload, though, the list being sent predates this change: go round once more so it goes up too.
+      dirty = was || (writing && !TodoStorage.sameDoc(docRecords(), before));
       return;
     }
     if (writing || dirty) return;
