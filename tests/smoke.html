@@ -171,6 +171,8 @@
       "one-time code": "482913",
       "card number": "4242 4242 4242 4242",
       "env line": "DATABASE_PASSWORD=hunter22",
+      "prefixed key in a sentence": "set MY_API_KEY=hunter22 please",
+      "prefixed password in a sentence": "DB_PASS=hunter22 now",
       "key inside text": "my key is 9fA8sd7f6g5h4j3k2l1qwe8r",
       "token in URL": "https://example.com/reset?token=abc123def456",
       "huge paste": "word ".repeat(600),
@@ -178,7 +180,7 @@
     const leaked = Object.entries(secrets).filter(([, v]) => filter(v).ok).map(([k]) => k);
     check("clipboard filter skips secrets", leaked.length === 0, leaked.join(", "));
     const todos = ["Buy oat milk", "Call the dentist at 4pm", "groceries", "https://github.com/NeelkanthTandel/todos/pull/3",
-      "Fix auth: refactor login flow", "- buy milk\n- call mom", "Review PR #42 before Friday"];
+      "Fix auth: refactor login flow", "- buy milk\n- call mom", "Review PR #42 before Friday", "Fix the password reset flow", "Write the token bucket rate limiter"];
     const dropped = todos.filter(v => !filter(v).ok);
     check("clipboard filter keeps ordinary todos", dropped.length === 0, JSON.stringify(dropped));
 
