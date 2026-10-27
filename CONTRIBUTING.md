@@ -21,25 +21,29 @@ Your local copy has its own `localStorage` (it's a different origin from the liv
 | File | What it does |
 | --- | --- |
 | `public/index.html` | Markup, and the Content Security Policy |
-| `public/app.js` | The board: lanes, drag and drop, list parsing, undo/redo, shortcuts, export/import |
-| `public/storage.js` | Where todos are kept: localStorage always, plus an optional HTTP mirror. The API contract is at the top. |
+| `public/app.js` | The board: lanes, drag and drop, list parsing, undo/redo, shortcuts, export/import, Claude sessions, live sharing, device sync |
+| `public/storage.js` | Where todos are kept: localStorage always, plus an optional HTTP mirror or device sync over the relay (with the per-todo merge). The API contract is at the top. |
 | `public/clipboard.js` | Decides whether copied text is safe to suggest (secret patterns). Add a case to `tests/smoke.html` when you change it. |
+| `public/relay.js` | Client for the relay: channels, state, pairing codes, the WebSocket, and AES-GCM + deflate encryption |
+| `public/qr.js` | A small QR code encoder for sync pairing codes (no library) |
 | `public/config.js` | Per-deploy settings |
 | `public/styles.css` | Styles, light and dark |
 | `tests/smoke.html` | End-to-end checks that drive the app in an iframe |
+| `relay/` | The end-to-end encrypted relay (Cloudflare Worker). Has its own tooling: `cd relay && npm ci && npm test`. See [relay/README.md](relay/README.md) |
+| `claude-plugin/` | The Claude Code plugin. Tests: `node --test claude-plugin/test/plugin.test.mjs`. See [claude-plugin/README.md](claude-plugin/README.md) |
 
 ## Before you open a pull request
 
-- `tests/run.sh` passes. It runs `tests/smoke.html` in headless Chrome. Set `CHROME=/path/to/browser` if it can't find one. You can also just open the test page and look for `PASS`.
+- `tests/run.sh` passes. It runs `tests/smoke.html` in headless Chrome. Set `CHROME=/path/to/browser` if it can't find one. (If it hangs with `RUNNING`, that Chrome build doesn't honour `--virtual-time-budget`; point `CHROME` at a `chrome-headless-shell` binary instead.) You can also just open the test page and look for `PASS`.
 - New behaviour has a check in `tests/smoke.html`.
 - UI changes include a before/after screenshot in the PR, in light and dark mode if colours changed.
 - One topic per PR. Small PRs get reviewed faster.
 
-CI also runs `node --check` and [html-validate](https://html-validate.org/) on every PR.
+CI also runs `node --check`, [html-validate](https://html-validate.org/), the plugin's tests and the relay's tests on every PR. If you change `public/clipboard.js`, copy it to `claude-plugin/scripts/clipboard.cjs` too (a test checks they match).
 
 ## Code guidelines
 
-- Keep it dependency-free: plain HTML, CSS and JavaScript, no frameworks, no build step, no CDN links.
+- Keep the site (`public/`) dependency-free: plain HTML, CSS and JavaScript, no frameworks, no build step, no CDN links. `relay/` and `claude-plugin/` are separate and may use their own tooling.
 - **No third-party requests.** No trackers, analytics, remote fonts or scripts. The Content Security Policy in `public/index.html` blocks them anyway.
 - Never put user text into `innerHTML`. Use `textContent`, or `esc()` for the few attribute strings built as HTML.
 - Anything read from localStorage, an imported file or the server goes through `normalize()` in `app.js`.
@@ -50,7 +54,7 @@ CI also runs `node --check` and [html-validate](https://html-validate.org/) on e
 
 ## Deploys
 
-Merges to `main` that touch `public/` publish to GitHub Pages at https://todos.always17.com/.
+Merges to `main` that touch `public/` publish to GitHub Pages at https://todos.always17.com/. Merges that touch `relay/` deploy the relay to Cloudflare Workers (`.github/workflows/relay.yml`).
 
 ## Reporting bugs and security issues
 

@@ -23,8 +23,11 @@
 - **Keyboard first.** Shortcuts work on the focused todo, or on the one under your mouse.
 - **Export as plain text** to paste anywhere (copy or `.txt`), or **export and import** a JSON backup to move between browsers or devices.
 - **Clipboard suggestions** (Chrome, Edge, Brave; off until you turn them on). Copy something, come back to Todos, and it's waiting in the box, selected: `Enter` adds it; `Backspace`, `Esc` or typing dismisses it; `Tab` keeps it to edit. Anything that looks like a password, API key, token, database URL with credentials, one-time code or card number is never suggested, and copies older than 10 minutes are ignored. Turn it on or off from the footer.
+- **Claude Code sessions as suggestions** (optional). Connect Claude Code and each new session shows up above the board; one key adds it, and the todo follows the session's status. End-to-end encrypted. See [Claude Code integration](#claude-code-integration).
+- **Live sharing** (optional, read-only for the people you share with). **Export → Share live link…** makes a link to some or all of your board; whoever opens it sees your changes within a second, and can't change a thing. See [Sharing your board](#sharing-your-board).
+- **Sync across devices** (optional). Pair your laptop, phone and other browsers with a code or QR code and they keep the same list, merging changes todo by todo and catching up after working offline. No account; end-to-end encrypted. See [Sync across devices](#sync-across-devices).
 - **Light and dark**, following your system. Works on phones.
-- **Private.** No accounts, analytics, trackers or third-party requests. It's a static page; your list never leaves your browser.
+- **Private.** No accounts, analytics, trackers or third-party requests. It's a static page; your list never leaves your browser. (The optional Claude Code integration and live sharing go through this project's own relay, encrypted end to end.)
 
 ## Keyboard shortcuts
 
@@ -41,12 +44,61 @@
 | `F` | Expand the lane under the mouse (`Esc` to go back) |
 | `↑` `↓` `←` `→` | Move between todos and lanes |
 | `Ctrl/⌘+Z`, `Ctrl/⌘+Shift+Z` | Undo, redo |
+| `` ` `` | Switch between your board and the last shared board you viewed |
+| `C` | On a shared board: add the focused or hovered todo to your own list |
+
+On a Claude session suggestion (focused or under the mouse): `Enter` or `1` adds it to Boiling over, `2`–`4` to another lane, `E` edits the title first, `Esc` or `Delete` dismisses it. `A` adds the newest suggestion from anywhere on the board.
+
+## Claude Code integration
+
+Run many Claude Code sessions at once? Each new one can show up on your board as a suggestion, waiting in a **Claude sessions** strip above the lanes. It isn't added until you say so. Once added, the todo shows the session's live status: **running**, **needs you** (waiting on a permission or question), **your turn** (finished its reply) or **ended**, and the tab title counts sessions that need you, like "(2) Todos". This works for Claude Code in the terminal, the desktop app and cloud sessions.
+
+**Set it up** (once per machine):
+
+1. Install the plugin in Claude Code (needs Node 18+):
+   ```
+   /plugin marketplace add NeelkanthTandel/todos
+   /plugin install todos@todos
+   ```
+2. On the board, click **Connect Claude Code** in the footer and run the `/todos:connect …` command it shows in Claude Code on that machine.
+
+The same dialog lists connected machines, each with a **Disconnect** button. `/todos:disconnect` forgets the connection on a machine. For cloud sessions, which start from a fresh container, set `TODOS_CONNECTION=<code>` in the environment's variables instead.
+
+**What's sent:** for each session, its first prompt's first line as a title (with Markdown and code removed, and nothing at all if it looks like a key, token or password), the project's folder name, and its status changes. Never your code, files, full prompts or paths. Everything is encrypted on your machine with a key that only your board and your connected machines have; the relay in between ([`relay/`](relay/README.md)) stores ciphertext only, and the board deletes each message once it has read it.
+
+**Opt out** per project with a `.todos-ignore` file in its root, or everywhere with `TODOS_DISABLE=1`.
+
+**Using a suggestion:** `Enter` (or the **Add** button) adds it to Boiling over, `2`–`4` to another lane, `E` lets you edit the title first, `Esc` dismisses it, and `A` adds the newest one from anywhere on the board. `Ctrl/⌘+Z` undoes an add. Click a linked todo's status badge to copy `claude --resume <id>`. Suggestions from sessions that ended a day ago without being added disappear on their own.
+
+More detail: [`claude-plugin/README.md`](claude-plugin/README.md).
+
+## Sharing your board
+
+Share a live, **read-only** view of your todos through a link. It needs the relay (`relayBase` in `public/config.js`), like the Claude Code integration.
+
+**Sharing:** **Export → Share live link…** asks for your name (shown as "Priya's todos") and what to include: open todos (on by default), done todos (off by default), and which lanes. **Create link** gives you a `…/#share=<id>.<key>` link to send. Anyone with the link can see those todos, and every change you make reaches them about a second later. While anything is shared, the footer says **Sharing live**; click it (or **Export → Shared links**) to copy a link again, change what it includes, or **Stop sharing**, which deletes it from the relay at once. You can have several links (say, one for work and one for home).
+
+**Viewing:** opening a link shows that board in a violet frame, with a banner that can't be closed: *Viewing Priya's todos · live · updated 2 min ago · read-only*. Nothing on it can be changed by any click, key, drag, paste or import. The only thing you can do is copy todos into **your own** Fridge: **Add to mine** (the `+` on a todo, or `C`) or **Copy to mine** in the banner, both undoable. **Back to my todos**, the `` ` `` key, or the switcher in the heading takes you back to your own list, which a shared board never touches. If the connection drops you keep the last copy (*Offline · last updated 3 h ago*); if the owner stops sharing you can **Remove** it or **Keep last copy**.
+
+The link holds the board's encryption key after the `#`, which browsers never send to a server, and Todos takes it out of the address bar as soon as the page opens. The relay only ever sees ciphertext.
+
+## Sync across devices
+
+Keep the same list on your laptop, phone and other browsers. Like live sharing, it needs the relay (`relayBase` in `public/config.js`).
+
+1. On your first device, click **Sync across devices** in the footer, then **Start syncing this device**. Your list is encrypted and uploaded.
+2. Click **Show a pairing code**. Scan the QR code with your other device's camera (it opens Todos with the code filled in), or copy the code and paste it into **Sync across devices** there, then **Link**.
+3. If that device already has todos, pick **Merge both lists** (the default) or **Replace this device's list**.
+
+From then on, a change on any device reaches the others within a moment, and each keeps working offline. Changes merge **per todo**: two devices editing different todos both keep their edits; the same todo edited on both keeps the newer edit; a deleted todo stays deleted even if an older copy turns up later (deletions are remembered for 30 days); and moves on two devices both survive, because each todo keeps its own position in its lane.
+
+The first device lists linked devices, each with **Unlink**, which stops that device syncing straight away (it keeps its list). **Turn off sync on this device** stops syncing on just that one. Undo still works for your own changes; when another device's list arrives, undo history starts again, as it does when another tab saves.
 
 ## Where your todos are stored
 
 By default everything lives in your browser's `localStorage`:
 
-- **Each browser keeps its own list.** Your laptop and phone don't share todos, and nothing reaches a server. Use **Export** and **Import** to copy a list across.
+- **Each browser keeps its own list.** Your laptop and phone don't share todos, and nothing reaches a server, unless you turn on [Sync across devices](#sync-across-devices). Or use **Export** and **Import** to copy a list across.
 - **Clearing site data deletes it**, and Safari deletes it if you haven't opened the site for 7 days (unless you've added it to your Home Screen). Export a backup now and then.
 - **Tabs stay in step.** A change in one tab shows up in your other tabs straight away.
 
@@ -98,6 +150,10 @@ On GitHub Pages, `.github/workflows/pages.yml` already publishes `public/` whene
 
 Give it its own domain or subdomain if you can. Every project page under `you.github.io` shares one `localStorage`, so another page there could read your todos. Keys are prefixed with `namespace` from `public/config.js` to avoid collisions, but that doesn't keep the data private.
 
+## Running your own relay
+
+The Claude Code integration, live sharing and device sync need the relay in [`relay/`](relay/README.md), a Cloudflare Worker that fits the free plan. `.github/workflows/relay.yml` deploys it from `main` once the `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` secrets are set on its `relay` environment (see [relay/README.md](relay/README.md#deploy)). Then set `relayBase` in `public/config.js` to its address and add its `https://` and `wss://` origins to `connect-src` in `public/index.html`. With `relayBase` empty, all three stay hidden.
+
 ## Moving to a database later
 
 The app never talks to a database directly. It always keeps the `localStorage` copy, so it loads instantly and works offline. Set `storage: "http"` in `public/config.js` and it also mirrors the whole list to an API with this contract (full details at the top of [`public/storage.js`](public/storage.js)):
@@ -110,6 +166,7 @@ The app never talks to a database directly. It always keeps the `localStorage` c
 - **The server works out who the user is** from its own session or cookie, so the client never sends a user id.
 - **Postgres:** `create table todo_lists (user_id text primary key, items jsonb not null, updated bigint not null);`. GET selects the row, PUT upserts it.
 - **Mongo:** one document per user, `{ _id: userId, items: [...], updated }`, written with `replaceOne(..., { upsert: true })`.
+- **Each todo carries `pos` (its place in its lane) and `updated` (when it last changed)** for device sync. Older lists without them still load, in the order they were saved.
 - **Existing browser data moves over automatically.** On first connect, if the server answers `404` (or an empty list with `updated: 0`) and the browser has todos, the app uploads them. Changes made while offline are uploaded when the server is reachable again.
 - **A newer server list wins.** When the tab regains focus, the app fetches the list and takes it if its `updated` is newer than what this browser last saw.
 - **Run the API on the same origin as the site** (for example behind the same domain's `/api` path). That avoids CORS and keeps cookies simple. An exported JSON file can seed the table, since `items` has exactly the shape the API stores.

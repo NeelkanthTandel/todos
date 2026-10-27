@@ -19,7 +19,7 @@
     /\bSK[0-9a-fA-F]{32}\b/,                                          // Twilio
     /\bey[\w-]{10,}\.ey[\w-]{10,}\.[\w-]{10,}/,                       // JWT
     /\b[a-z][a-z0-9+.-]*:\/\/[^\s:/@]+:[^\s/@]+@/i,                   // user:password@ in any URL (postgres, mongodb+srv, redis, amqp, https…)
-    /\b(?:pass(?:word|wd|code)?|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|auth|signature|sig|credentials?)\s*["']?\s*[:=]\s*["']?(?:(?=[^\s"']*\d)[^\s"']{6,}|[^\s"']{16,})/i, // KEY=value, ?token=…
+    /(?<![A-Za-z0-9])(?:pass(?:word|wd|code)?|pwd|secret(?:[_-]?key)?|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|auth|signature|sig|credentials?)\s*["']?\s*[:=]\s*["']?(?:(?=[^\s"']*\d)[^\s"']{6,}|[^\s"']{16,})/i, // KEY=value, ?token=…, DB_PASS=… (no \b: it fails after _)
   ];
 
   // Shannon entropy in bits per character: random keys score high (~4+), words and sentences lower.
@@ -66,5 +66,6 @@
     return { ok: true };
   }
 
-  window.TodoClipboard = { check };
+  // globalThis is window in the browser; the Claude Code plugin loads a copy of this file in Node.
+  globalThis.TodoClipboard = { check };
 })();

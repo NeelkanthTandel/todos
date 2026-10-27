@@ -1,0 +1,28 @@
+# Todos relay: a dumb, end-to-end encrypted mailbox and state mirror. See README.md.
+name = "todos-relay"
+main = "src/index.ts"
+compatibility_date = "2026-10-01"
+workers_dev = true
+
+# Request bodies are ciphertext, but keep them out of logs anyway: no Workers Logs, no Logpush.
+[observability]
+enabled = false
+
+[vars]
+# Exact origins allowed to call the relay from a browser (comma-separated): the site, and the Mac app's
+# WKWebView (todos-app://app). http://localhost:* and http://127.0.0.1:* are always allowed for local development.
+ALLOWED_ORIGINS = "https://todos.always17.com,todos-app://app"
+
+[[durable_objects.bindings]]
+name = "CHANNEL"
+class_name = "Channel"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Channel"]
+
+# Creating channels is the only unauthenticated write, so it's limited per IP address.
+[[ratelimits]]
+name = "CREATE_LIMIT"
+namespace_id = "1701"
+simple = { limit = 10, period = 60 }

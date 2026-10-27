@@ -1,0 +1,12 @@
+{
+  "name": "todos",
+  "description": "Claude Code plugins from the Todos project",
+  "owner": { "name": "Neelkanth Tandel", "url": "https://github.com/NeelkanthTandel" },
+  "plugins": [
+    {
+      "name": "todos",
+      "source": "./claude-plugin",
+      "description": "Shows each new Claude Code session on your Todos board as a suggestion, with live status. End-to-end encrypted."
+    }
+  ]
+}

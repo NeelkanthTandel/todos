@@ -15,14 +15,23 @@ concurrency:
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: JavaScript syntax
-        run: for f in public/*.js; do node --check "$f"; done
+        run: |
+          node --version
+          for f in public/*.js claude-plugin/scripts/*.mjs; do node --check "$f"; done
       - name: HTML
         run: npx --yes html-validate@11.16.2 public/index.html tests/smoke.html
       - name: Smoke test in headless Chrome
         run: tests/run.sh
+      - name: Claude Code plugin tests
+        run: node --test claude-plugin/test/plugin.test.mjs
+      - name: Relay tests (types, then Vitest in workerd)
+        working-directory: relay
+        run: |
+          npm ci
+          npm test
