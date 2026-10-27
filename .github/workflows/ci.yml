@@ -35,3 +35,41 @@ jobs:
         run: |
           npm ci
           npm test
+
+  mac:
+    runs-on: macos-15
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: mac
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Select Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+      - name: Toolchain
+        run: swift --version
+      - name: Lint
+        run: make lint
+      - name: Unit tests
+        run: swift test
+      - name: Build app bundle
+        run: scripts/build_app.sh
+      - name: Self-test the built app (renders the board, CSP, storage, Option+Space toggle path)
+        run: |
+          perl -e 'alarm 120; exec @ARGV' env TODOS_SELFTEST="$RUNNER_TEMP/selftest" build/Todos.app/Contents/MacOS/Todos
+          cat "$RUNNER_TEMP/selftest/report.json"
+          jq -e '.lanes == 4 and .page.secureContext and .page.webCrypto and .page.storage and .page.csp == "blocked"
+            and .page.nativeClipboard and .page.origin == "todos-app://app"' "$RUNNER_TEMP/selftest/report.json"
+      - name: App size
+        run: du -sh build/Todos.app
+      - name: Upload app and self-test
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Todos-mac
+          path: |
+            mac/build/Todos.app
+            ${{ runner.temp }}/selftest
+          retention-days: 7

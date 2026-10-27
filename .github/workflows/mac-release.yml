@@ -1,0 +1,82 @@
+# Builds the Mac app and publishes it as a GitHub Release, like Recess.
+#
+# Triggered by pushing a tag like mac-v1.2.3. The app is signed ad hoc, not with a Developer ID, so
+# macOS asks once before opening it (the release notes explain how). The website deploys separately.
+name: Mac release
+
+on:
+  push:
+    tags: ["mac-v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mac-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: macos-15
+    timeout-minutes: 45
+    permissions:
+      contents: write # create the GitHub Release and upload the disk image
+    defaults:
+      run:
+        working-directory: mac
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read version from tag
+        run: |
+          VERSION="${GITHUB_REF_NAME#mac-v}"
+          if ! echo "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.]+)?$'; then
+            echo "::error::Tag $GITHUB_REF_NAME isn't a version like mac-v1.2.3"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Select Xcode
+        run: sudo xcode-select -s "$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)"
+
+      - name: Test
+        run: swift test
+
+      - name: Build app
+        env:
+          BUILD_NUMBER: ${{ github.run_number }}
+        run: scripts/build_app.sh --universal
+
+      - name: Build disk image
+        run: scripts/make_dmg.sh
+
+      - name: Checksum and release notes
+        working-directory: mac/build
+        run: |
+          shasum -a 256 Todos.dmg > Todos.dmg.sha256
+          {
+            echo "Download **Todos.dmg**, open it and drag Todos to Applications. Requires macOS 14 or later (Apple Silicon or Intel)."
+            echo
+            echo "Press **⌥ Space** (Option+Space) anywhere to show or hide your board. Todos takes over that shortcut system-wide while it runs."
+            echo
+            echo "This build isn't notarized by Apple, so macOS blocks it the first time:"
+            echo
+            echo "1. Open Todos. When macOS says it can't verify the app, click **Done**."
+            echo "2. Open **System Settings › Privacy & Security**, scroll to **Security** and click **Open Anyway** next to Todos."
+            echo "3. Confirm with your password or Touch ID, then click **Open**."
+            echo
+            echo "You only need to do this once. Prefer the Terminal? \`xattr -dr com.apple.quarantine /Applications/Todos.app\`"
+            echo
+            echo "SHA-256: \`$(cut -d' ' -f1 Todos.dmg.sha256)\`"
+          } > "$RUNNER_TEMP/notes.md"
+
+      - name: Publish release
+        working-directory: mac/build
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "Todos for Mac $VERSION" --notes-file "$RUNNER_TEMP/notes.md" \
+            Todos.dmg Todos.dmg.sha256
