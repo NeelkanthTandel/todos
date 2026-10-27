@@ -23,8 +23,9 @@
   const frame = document.getElementById("app");
   const log = document.getElementById("log");
   const sleep = ms => new Promise(r => setTimeout(r, ms));
-  // Headless runs use virtual time, so fixed sleeps can finish before real work like reading a file.
-  async function waitFor(cond, tries = 500) { for (let i = 0; i < tries && !cond(); i++) await sleep(10); return cond(); }
+  // Headless runs use virtual time, so fixed sleeps can finish before real work like reading a file. The clock
+  // skips to the next timer whenever the page is idle, so polls are cheap in real time: be generous.
+  async function waitFor(cond, tries = 3000) { for (let i = 0; i < tries && !cond(); i++) await sleep(10); return cond(); }
   let failures = 0, passes = 0;
 
   function check(name, ok, detail) {
@@ -322,12 +323,14 @@
     c = cardFor("sess-1"); c.focus(); key(c, "2");
     check("2 adds it to Simmering", rows("m").includes("Fix the flaky login test") && todoFor("sess-1").prio === "m" && !cardFor("sess-1"));
 
-    await deliver(ev("needs_you", "sess-1"));
+    // Times relative to this message, not Date.now() later: run.sh's virtual clock can jump a minute in between.
+    const needsAt = Date.now();
+    await deliver(ev("needs_you", "sess-1", { at: needsAt }));
     let li = doc().querySelector('#list-m li[data-id="' + todoFor("sess-1").id + '"]');
     check("a status update changes the badge on the added todo", li.querySelector(".sess").dataset.state === "needs_you" &&
       li.querySelector(".sess").textContent === "Needs you" && todoFor("sess-1").session.state === "needs_you");
     check("the page title counts sessions that need you", doc().title === "(1) Todos", doc().title);
-    await deliver(ev("running", "sess-1", { at: Date.now() - 60000 }));
+    await deliver(ev("running", "sess-1", { at: needsAt - 60000 }));
     check("an older message arriving late doesn't win", todoFor("sess-1").session.state === "needs_you");
     await deliver(ev("your_turn", "sess-1"));
     check("the badge follows the session", doc().querySelector("#list-m .sess").dataset.state === "your_turn" && doc().title === "Todos", doc().title);
@@ -735,7 +738,12 @@
     // Live updates re-render; late, malformed or foreign states are ignored.
     const board2 = { v: 1, name: "Priya", at: Date.now(), lanes: [[{ t: "Ship it" }], [{ t: "Review" }, { t: "New thing" }], [], [{ t: '<img src=x onerror="parent.__xss3=1">' }]] };
     await deliverState(await win().TodoRelay.encrypt(VKEY, board2), 2);
-    check("a state update re-renders the board", rows("m").join("|") === "Review|New thing" && rows("h").join() === "Ship it" && $("viewText").textContent.includes("updated just now"));
+    // The banner shows board2's time. Expected from the clock now: run.sh's virtual clock can move a minute or more
+    // while the state is encrypted and decrypted.
+    const mins2 = Math.floor((Date.now() - board2.at) / 60e3);
+    const updated2 = "updated " + (mins2 < 1 ? "just now" : mins2 + " min ago");
+    check("a state update re-renders the board", rows("m").join("|") === "Review|New thing" && rows("h").join() === "Ship it" && $("viewText").textContent.includes(updated2),
+      $("viewText").textContent + " (expected " + updated2 + ")");
     check("shared text with markup renders as text", rows("n")[0].startsWith("<img") && !doc().querySelector(".board img") && !window.__xss3);
     await deliverState(await win().TodoRelay.encrypt(VKEY, board1), 1);
     check("an older state arriving late is ignored", rows("m").join("|") === "Review|New thing");
