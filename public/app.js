@@ -1333,7 +1333,9 @@
   const SHARES_KEY = NS + ".shares", SHARE_NAME_KEY = NS + ".shareName";
   const CHANNEL_RE = /^[\w-]{22}$/, KEY_RE = /^[\w-]{43}$/;
   const SHARE_DEBOUNCE = 1000;
-  const cleanName = n => (typeof n === "string" ? n.replace(/\s+/g, " ").trim().slice(0, 40) : "");
+  // No control or bidirectional formatting characters: a name must not be able to reorder the banner around it.
+  const cleanName = n => (typeof n === "string" ? n.replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+    .replace(/\s+/g, " ").trim().slice(0, 40) : "");
   const possessive = n => (n || "Someone") + "'s";
   function normOptions(o) {
     o = o && typeof o === "object" ? o : {};
@@ -1382,11 +1384,17 @@
         if (hash === x.sent) continue;
         try {
           await relay.putState(x, await TodoRelay.encrypt(x.key, snap));
-          x.sent = hash; saveShares();
+          x.sent = hash; x.tooBig = false;
+          if (shares.includes(x)) saveShares();
         } catch (e) {
+          if (!shares.includes(x)) continue; // stopped while this upload was in flight
           const st = e && e.status;
           if (st === 404 || st === 401) { dropShare(x); toast("A shared link expired, so it's no longer live"); }
-          else if (st === 413) toast("Too many todos to share live. Include fewer in Shared links.");
+          else if (st === 413) {
+            // Say it once, not on every save; the next change tries again.
+            if (!x.tooBig) toast("Too many todos to share live. Include fewer in Shared links.");
+            x.tooBig = true; x.sent = hash;
+          }
           else retry = true; // offline, rate-limited or the relay is down: try again shortly
         }
       }
@@ -1513,30 +1521,41 @@
   // Opening a link saves the board under todos.shared (never in todos.v1) and shows it, read-only, in place of
   // yours. Every write path checks blocked(); the only write allowed is copying todos into your own list.
   const SHARED_KEY = NS + ".shared", LAST_SHARED_KEY = NS + ".lastShared";
-  const MAX_SHARED_ITEMS = 5000;
+  // At most 5,000 todos and 200,000 characters of text per board, and about 2 MB for all the boards kept in
+  // localStorage, so someone else's board can never fill the storage your own list needs.
+  const MAX_SHARED_ITEMS = 5000, MAX_SHARED_CHARS = 200000, SHARED_BUDGET = 1e6;
   const COPY_LABEL = "copy to my list";
   // A decrypted snapshot is untrusted: the right shape or nothing, known fields only, text capped like normalize().
   function normShare(s) {
     if (!s || typeof s !== "object" || Array.isArray(s) || s.v !== 1 || !Array.isArray(s.lanes) || s.lanes.length !== 4) return null;
     if (!s.lanes.every(Array.isArray)) return null;
-    let n = 0;
+    let n = 0, chars = 0;
     const lanes = s.lanes.map(l => {
       const out = [];
       for (const x of l) {
-        if (n >= MAX_SHARED_ITEMS) break;
+        if (n >= MAX_SHARED_ITEMS || chars >= MAX_SHARED_CHARS) break;
         if (!x || typeof x !== "object" || typeof x.t !== "string" || !x.t.trim()) continue;
         const it = { t: x.t.trim().slice(0, 500) };
         if (x.d === 1) it.d = 1; else if (x.w === 1) it.w = 1;
-        out.push(it); n++;
+        out.push(it); n++; chars += it.t.length;
       }
       return out;
     });
     return { v: 1, name: cleanName(s.name), at: Math.min(num(s.at), Date.now()), lanes };
   }
+  // Row ids come from the content (lane, done, text), not the position, so a live update that adds or removes a
+  // todo above the one you're on keeps focus, and C, on the same todo.
+  function textHash(str) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 0x01000193);
+    return (h >>> 0).toString(36);
+  }
   function sharedItems(st) {
-    const out = [];
-    if (st) st.lanes.forEach((l, i) => l.forEach((x, j) => {
-      const t = { id: "v" + i + "-" + j, text: x.t, done: x.d === 1, prio: ORDER[i], created: 0 };
+    const out = [], seen = new Map();
+    if (st) st.lanes.forEach((l, i) => l.forEach(x => {
+      const base = "v" + i + (x.d === 1 ? "d" : "") + "-" + textHash(x.t);
+      const n = seen.get(base) || 0; seen.set(base, n + 1);
+      const t = { id: base + (n ? "-" + n : ""), text: x.t, done: x.d === 1, prio: ORDER[i], created: 0 };
       if (t.done) t.doneAt = 0; else if (x.w) t.wip = true;
       out.push(t);
     }));
@@ -1556,8 +1575,20 @@
     return out;
   }
   let shared = loadShared(), viewSub = null, viewStatus = "offline";
-  const saveShared = () => lsSet(SHARED_KEY, JSON.stringify(shared.map(({ id, key, name, lastState, lastSeenAt, version, stopped, kept }) =>
-    ({ id, key, name, lastState, lastSeenAt, version, stopped, kept }))));
+  function saveShared() {
+    const rows = shared.map(({ id, key, name, lastState, lastSeenAt, version, stopped, kept }) =>
+      ({ id, key, name, lastState, lastSeenAt, version, stopped, kept }));
+    // Over budget: the boards you looked at longest ago keep their link but not their last copy (a live board
+    // fetches it again when you open it). The one on screen and copies you chose to keep go last.
+    let size = JSON.stringify(rows).length;
+    const cut = rows.filter(r => r.lastState && !(viewing && viewing.id === r.id))
+      .sort((a, b) => (a.kept - b.kept) || (a.lastSeenAt - b.lastSeenAt));
+    while (size > SHARED_BUDGET && cut.length) {
+      const r = cut.shift();
+      size -= JSON.stringify(r.lastState).length - 4; r.lastState = null;
+    }
+    return lsSet(SHARED_KEY, JSON.stringify(rows));
+  }
   const sharedById = id => shared.find(s => s.id === id);
 
   function blocked() {
@@ -1572,7 +1603,7 @@
   function view(id) {
     const x = sharedById(id);
     if (!x) return;
-    if (viewing !== x) closeView();
+    if (viewing !== x) { closeView(); $("viewBar").dataset.status = ""; }
     viewing = x; x.items = sharedItems(x.lastState);
     lsSet(LAST_SHARED_KEY, x.id);
     setHash("#shared=" + x.id); // never leave the key in the address bar
@@ -1632,9 +1663,13 @@
       if (!x || ev.type !== "state" || typeof ev.data !== "string" || ev.data.length > 400000) return;
       const version = num(ev.version);
       if (version < x.version) return; // an older copy arriving late
-      let st = null;
-      try { st = normShare(await TodoRelay.decrypt(x.key, ev.data, 4e6)); } catch {}
+      const read = async key => { try { return normShare(await TodoRelay.decrypt(key, ev.data, 4e6)); } catch { return null; } };
+      let st = await read(x.key);
+      // A link with a different key for a board you already have only takes over if the saved key no longer works.
+      if (!st && x.altKey) { const alt = x.altKey; st = await read(alt); if (st) x.key = alt; }
+      if (st) delete x.altKey;
       if (!st) return; // not a board we can read: keep showing what we have
+      if (version < x.version || !shared.includes(x)) return; // a newer copy finished first, or it was removed
       Object.assign(x, { lastState: st, name: st.name || x.name, version, lastSeenAt: Date.now() });
       saveShared();
       if (viewing === x) {
@@ -1684,7 +1719,12 @@
       parts = ["Viewing ", b, " todos · " + state];
     }
     $("viewText").replaceChildren(...parts.filter(Boolean), " · read-only");
-    $("viewBar").dataset.status = stopped ? "stopped" : viewStatus;
+    // The banner isn't a live region (it redraws every 30 s); only a change of state is read out.
+    const status = stopped ? "stopped" : viewStatus;
+    const was = $("viewBar").dataset.status;
+    if (was && was !== status && (status === "stopped" || status === "offline" || (status === "live" && was === "offline")))
+      announce(status === "stopped" ? (x.name || "The owner") + " stopped sharing" : status === "live" ? "Back online" : "Offline. Showing the last copy.");
+    $("viewBar").dataset.status = status;
     $("viewRemove").hidden = $("viewKeep").hidden = !(stopped && !x.kept);
     $("viewCopy").disabled = !x.items || !x.items.some(t => !t.done);
   }
@@ -1797,9 +1837,9 @@
     if (m) {
       let x = sharedById(m[1]);
       if (!x) shared.push(x = { id: m[1], key: m[2], name: "", lastState: null, lastSeenAt: 0, version: 0, stopped: false, kept: false });
-      else if (x.key !== m[2]) Object.assign(x, { key: m[2], lastState: null, version: 0 });
-      saveShared();
+      else if (x.key !== m[2]) x.altKey = m[2]; // tried on the next update; see onShareEvent
       view(x.id);
+      saveShared(); // after view(), so the board you're opening is the last to lose its stored copy
       return;
     }
     if (h.startsWith("#share=")) { setHash(""); toast("That share link is incomplete. Ask for it again."); return; }
