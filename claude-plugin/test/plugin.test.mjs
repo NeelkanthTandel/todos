@@ -27,7 +27,10 @@ function tmpDir() { return fs.mkdtempSync(path.join(os.tmpdir(), "todos-plugin-"
 function run(script, args, { stdin = "", env = {}, cwd } = {}) {
   return new Promise(resolve => {
     const t0 = Date.now();
-    const p = spawn(process.execPath, [script, ...args], { cwd, env: { ...process.env, TODOS_CONNECTION: "", CLAUDE_CODE_REMOTE: "", ...env } });
+    const p = spawn(process.execPath, [script, ...args], {
+      cwd,
+      env: { ...process.env, TODOS_CONNECTION: "", CLAUDE_CODE_REMOTE: "", CLAUDE_PROJECT_DIR: "", CLAUDE_CODE_ENTRYPOINT: "cli", TODOS_SDK: "", ...env },
+    });
     let out = "", err = "";
     p.stdout.on("data", d => { out += d; });
     p.stderr.on("data", d => { err += d; });
@@ -38,14 +41,14 @@ function run(script, args, { stdin = "", env = {}, cwd } = {}) {
 }
 
 // A stand-in relay that decrypts what it receives.
-async function fakeRelay(status = 201) {
+async function fakeRelay(status = 201, headers = {}) {
   const got = [];
   const server = http.createServer((req, res) => {
     let body = "";
     req.on("data", d => { body += d; });
     req.on("end", () => {
       got.push({ url: req.url, auth: req.headers.authorization, body });
-      res.writeHead(status, { "Content-Type": "application/json" });
+      res.writeHead(status, { "Content-Type": "application/json", ...headers });
       res.end('{"id":"m1"}');
     });
   });
@@ -54,6 +57,7 @@ async function fakeRelay(status = 201) {
 }
 const TOKEN = L.toB64u(new Uint8Array(32).fill(7));
 const conn = relay => ({ relay, channelId: "AAAAAAAAAAAAAAAAAAAAAA", key: KEY, writerToken: TOKEN });
+const events = async relay => Promise.all(relay.got.map(g => L.decrypt(KEY, JSON.parse(g.body).data)));
 
 test("title: first meaningful line, without Markdown or code, at most 80 characters", () => {
   assert.equal(L.titleFrom("## Fix **the** [login](https://example.com) bug\nand more"), "Fix the login bug");
@@ -79,6 +83,15 @@ test("title: anything that looks like a secret is never sent", () => {
     "use the key sk-ant-api03-" + "x".repeat(60) + " for the tests in the staging environment please and thanks",
   ];
   for (const s of secrets) assert.equal(L.titleFrom(s), null, s);
+});
+
+test("title: Markdown stripping can't break up a secret, and snake_case survives", () => {
+  // Stripping _…_ inside words used to turn MY_API_KEY=… into MYAPIKEY=…, which the filter let through.
+  for (const s of ["set MY_API_KEY=abc123xyz and run", "use my_db_password=hunter22 here", "call with __token=abc123def__ please"]) {
+    assert.equal(L.titleFrom(s), null, s);
+  }
+  assert.equal(L.titleFrom("rename my_var_name to user_id"), "rename my_var_name to user_id");
+  assert.equal(L.titleFrom("_Why_ is the __build__ slow?"), "Why is the build slow?");
 });
 
 test("the secret filter is the website's, byte for byte", () => {
@@ -114,14 +127,23 @@ test("config: connect saves it privately, disconnect removes it", async () => {
   const dir = tmpDir(), relay = await fakeRelay();
   try {
     const env = { TODOS_CONFIG_DIR: dir };
-    const bad = await run(CONNECT, ["not-a-code"], { env });
-    assert.equal(bad.code, 1);
-    assert.match(bad.out, /isn't a Todos pairing code/);
+    // Always exit 0 with an explanation: the `!` command shows a generic failure otherwise.
+    for (const args of [["not-a-code"], [""], []]) {
+      const bad = await run(CONNECT, args, { env });
+      assert.equal(bad.code, 0, bad.err);
+      assert.match(bad.out, /isn't a Todos pairing code/);
+    }
     assert.equal(fs.existsSync(path.join(dir, "connection.json")), false);
+    const blocker = path.join(dir, "not-a-folder");
+    fs.writeFileSync(blocker, "");
+    const unsaved = await run(CONNECT, [L.encodeCode(conn(relay.url))], { env: { TODOS_CONFIG_DIR: blocker } });
+    assert.equal(unsaved.code, 0, unsaved.err);
+    assert.match(unsaved.out, /Couldn't save the connection/);
+    assert.equal(relay.got.length, 0);
 
     const ok = await run(CONNECT, [L.encodeCode(conn(relay.url))], { env });
     assert.equal(ok.code, 0, ok.err);
-    assert.match(ok.out, /Connected/);
+    assert.ok(ok.out.startsWith("Connected to your Todos board via " + new URL(relay.url).host + "."), ok.out);
     const file = path.join(dir, "connection.json");
     assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), conn(relay.url));
     if (process.platform !== "win32") assert.equal(fs.statSync(file).mode & 0o777, 0o600);
@@ -148,6 +170,7 @@ test("hook: sends the expected encrypted events for a session", async () => {
       ["prompt", { ...base, prompt: "and add a test" }],
       ["notification", { ...base, notification_type: "permission_prompt", message: "Claude needs your permission" }],
       ["notification", { ...base, notification_type: "auth_success" }],
+      ["notification", { ...base, notification_type: "idle_prompt" }],
       ["stop", { ...base, stop_hook_active: false }],
       ["end", { ...base, reason: "prompt_input_exit" }],
     ];
@@ -155,7 +178,7 @@ test("hook: sends the expected encrypted events for a session", async () => {
       const r = await run(HOOK, [ev], { stdin: JSON.stringify(input), env });
       assert.deepEqual([r.code, r.out, r.err], [0, "", ""], ev);
     }
-    const msgs = await Promise.all(relay.got.map(g => L.decrypt(KEY, JSON.parse(g.body).data)));
+    const msgs = await events(relay);
     assert.deepEqual(msgs.map(m => m.event), ["start", "suggest", "running", "needs_you", "your_turn", "ended"]);
     assert.equal(msgs[1].title, "Fix the flaky login test");
     for (const m of msgs) {
@@ -166,7 +189,7 @@ test("hook: sends the expected encrypted events for a session", async () => {
     }
     assert.equal(relay.got[0].url, "/c/AAAAAAAAAAAAAAAAAAAAAA/messages");
     assert.equal(relay.got[0].auth, "Bearer " + TOKEN);
-    assert.equal(fs.existsSync(path.join(dir, "sessions", "sess-1")), false, "the session marker is cleaned up");
+    assert.equal(fs.existsSync(path.join(dir, "sessions", "sess-1")), true, "the marker outlives the session, for --resume");
 
     // Cloud sessions say so; a secret-looking first prompt gets no title.
     relay.got.length = 0;
@@ -220,4 +243,113 @@ test("hook: never throws, never prints, always exits 0 quickly", async () => {
     assert.deepEqual([r.code, r.out, r.err], [0, "", ""]);
     assert.ok(r.ms < 4500, r.ms + " ms");
   } finally { hang.closeAllConnections?.(); hang.close(); }
+});
+
+test("hook: the project is where the session started, and an ignored session stays ignored after a cd", async () => {
+  const dir = tmpDir(), relay = await fakeRelay();
+  const secret = fs.mkdtempSync(path.join(os.tmpdir(), "client-repo-"));
+  fs.mkdirSync(path.join(secret, ".git"));
+  fs.writeFileSync(path.join(secret, ".todos-ignore"), "");
+  const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "elsewhere-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "home-repo-"));
+  fs.mkdirSync(path.join(home, ".git"));
+  try {
+    const env = { TODOS_CONFIG_DIR: dir, TODOS_CONNECTION: L.encodeCode(conn(relay.url)) };
+    // Started in an ignored project, then Claude cd'd out of it: still nothing.
+    await run(HOOK, ["start"], { stdin: JSON.stringify({ session_id: "ign", cwd: secret, source: "startup" }), env });
+    for (const ev of ["prompt", "stop", "prompt"]) {
+      await run(HOOK, [ev], { stdin: JSON.stringify({ session_id: "ign", cwd: elsewhere, prompt: "draft the letter" }), env });
+    }
+    // Even when CLAUDE_PROJECT_DIR isn't set and only the first event saw the ignored folder.
+    await run(HOOK, ["prompt"], { stdin: JSON.stringify({ session_id: "ign2", cwd: secret, prompt: "x y" }), env });
+    await run(HOOK, ["prompt"], { stdin: JSON.stringify({ session_id: "ign2", cwd: elsewhere, prompt: "x y" }), env });
+    // CLAUDE_PROJECT_DIR wins over cwd for the ignore check...
+    await run(HOOK, ["prompt"], { stdin: JSON.stringify({ session_id: "ign3", cwd: elsewhere, prompt: "x y" }), env: { ...env, CLAUDE_PROJECT_DIR: secret } });
+    assert.equal(relay.got.length, 0);
+    // ...and for the project name.
+    await run(HOOK, ["prompt"], { stdin: JSON.stringify({ session_id: "ok", cwd: elsewhere, prompt: "Fix it" }), env: { ...env, CLAUDE_PROJECT_DIR: home } });
+    const [m] = await events(relay);
+    assert.deepEqual([m.event, m.project], ["suggest", path.basename(home)]);
+  } finally { relay.close(); }
+});
+
+test("hook: only notifications that need you become needs_you", async () => {
+  const dir = tmpDir(), relay = await fakeRelay();
+  try {
+    const env = { TODOS_CONFIG_DIR: dir, TODOS_CONNECTION: L.encodeCode(conn(relay.url)) };
+    const types = ["permission_prompt", "idle_prompt", "auth_success", "elicitation_dialog", "elicitation_url_dialog",
+      "elicitation_complete", "elicitation_response", "agent_needs_input", "agent_completed", "plugin_notification", "quota_auto_resume_fired", undefined];
+    for (const notification_type of types) {
+      await run(HOOK, ["notification"], { stdin: JSON.stringify({ session_id: "n", cwd: dir, notification_type, message: "hi" }), env });
+    }
+    assert.equal((await events(relay)).filter(m => m.event === "needs_you").length, 4);
+    assert.equal(relay.got.length, 4);
+  } finally { relay.close(); }
+});
+
+test("hook: compaction sends nothing, and a resumed session isn't suggested again", async () => {
+  const dir = tmpDir(), relay = await fakeRelay();
+  try {
+    const env = { TODOS_CONFIG_DIR: dir, TODOS_CONNECTION: L.encodeCode(conn(relay.url)) };
+    const go = (ev, extra) => run(HOOK, [ev], { stdin: JSON.stringify({ session_id: "r", cwd: dir, ...extra }), env });
+    await go("start", { source: "startup" });
+    await go("prompt", { prompt: "Fix login" });
+    await go("start", { source: "compact" });
+    await go("end", { reason: "prompt_input_exit" });
+    await go("start", { source: "resume" });
+    await go("prompt", { prompt: "keep going" });
+    assert.deepEqual((await events(relay)).map(m => m.event), ["start", "suggest", "ended", "start", "running"]);
+
+    // A session resumed after its marker was swept (or from before connecting) isn't suggested either.
+    relay.got.length = 0;
+    const old = (ev, extra) => run(HOOK, [ev], { stdin: JSON.stringify({ session_id: "old", cwd: dir, ...extra }), env });
+    await old("start", { source: "resume" });
+    await old("prompt", { prompt: "pick this up" });
+    assert.deepEqual((await events(relay)).map(m => m.event), ["start", "running"]);
+
+    // After /clear the old id is finished, so its marker goes.
+    await go("end", { reason: "clear" });
+    assert.equal(fs.existsSync(path.join(dir, "sessions", "r")), false);
+  } finally { relay.close(); }
+});
+
+test("hook: claude -p and Agent SDK runs send nothing", async () => {
+  const dir = tmpDir(), relay = await fakeRelay();
+  try {
+    const env = { TODOS_CONFIG_DIR: dir, TODOS_CONNECTION: L.encodeCode(conn(relay.url)) };
+    const stdin = JSON.stringify({ session_id: "p", cwd: dir, prompt: "summarise the logs" });
+    for (const ep of ["sdk-cli", "sdk-ts", "sdk-py"]) {
+      const r = await run(HOOK, ["prompt"], { stdin, env: { ...env, CLAUDE_CODE_ENTRYPOINT: ep } });
+      assert.deepEqual([r.code, r.out, r.err], [0, "", ""]);
+    }
+    assert.equal(relay.got.length, 0);
+    await run(HOOK, ["prompt"], { stdin, env: { ...env, CLAUDE_CODE_ENTRYPOINT: "sdk-ts", TODOS_SDK: "1" } });
+    await run(HOOK, ["stop"], { stdin, env: { ...env, CLAUDE_CODE_ENTRYPOINT: "claude-desktop" } });
+    assert.deepEqual((await events(relay)).map(m => m.event), ["suggest", "your_turn"]);
+  } finally { relay.close(); }
+});
+
+test("hook: never follows a redirect with the writer token", async () => {
+  const dir = tmpDir(), thief = await fakeRelay();
+  const relay = await fakeRelay(307, { Location: thief.url + "/steal" });
+  try {
+    const env = { TODOS_CONFIG_DIR: dir, TODOS_CONNECTION: L.encodeCode(conn(relay.url)) };
+    const r = await run(HOOK, ["stop"], { stdin: JSON.stringify({ session_id: "s", cwd: dir }), env });
+    assert.deepEqual([r.code, r.out, r.err], [0, "", ""]);
+    assert.equal(relay.got.length, 1);
+    assert.equal(thief.got.length, 0);
+    await assert.rejects(L.send(conn(relay.url), { event: "x" }));
+    assert.equal(thief.got.length, 0);
+  } finally { relay.close(); thief.close(); }
+});
+
+test("hook: stops reading oversized input and quits promptly", async () => {
+  const dir = tmpDir(), relay = await fakeRelay();
+  try {
+    const env = { TODOS_CONFIG_DIR: dir, TODOS_CONNECTION: L.encodeCode(conn(relay.url)) };
+    const r = await run(HOOK, ["prompt"], { stdin: "x".repeat(20 << 20), env });
+    assert.deepEqual([r.code, r.out, r.err], [0, "", ""]);
+    assert.ok(r.ms < 1500, r.ms + " ms"); // gave up at the 1 MB cap, not at the 1.5 s read timeout
+    assert.equal(relay.got.length, 0);
+  } finally { relay.close(); }
 });

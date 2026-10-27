@@ -101,6 +101,7 @@ export async function send(conn, message, { timeout = 2500, retries = 1 } = {}) 
       headers: { "Content-Type": "application/json", Authorization: "Bearer " + conn.writerToken },
       body: JSON.stringify({ data }),
       signal: AbortSignal.timeout(timeout),
+      redirect: "error", // never replay the writer token to wherever a redirect points
     });
     if (res.status === 429 && attempt < retries) { await new Promise(r => setTimeout(r, 700)); continue; }
     return res.status;
@@ -130,13 +131,18 @@ export function titleFrom(prompt) {
     .replace(/^ {0,3}(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1[^\n]*$|(?![\s\S]))/gm, "\n"); // fenced code blocks
   for (const raw of text.split("\n")) {
     if (/^( {4}|\t)/.test(raw)) continue; // indented code
+    // Check the line as typed too: stripping Markdown can break up a secret (MY_API_KEY=… → MYAPIKEY=…).
+    const typed = secretCheck(raw.slice(0, 2000));
+    if (!typed.ok && KEEP_OUT.has(typed.reason)) return null;
     const line = raw
       .replace(/<\/?[A-Za-z][^>]{0,200}>/g, " ")
       .replace(/^\s*(?:#{1,6}\s+|>\s?|[-*+]\s+(?:\[[ xX]\]\s+)?|\d{1,3}[.)]\s+)+/, "")
       .replace(/!\[([^\]]*)\]\([^)]*\)/g, "$1")
       .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
       .replace(/`+([^`]*)`+/g, "$1")
-      .replace(/(\*\*|__|\*|_|~~)(\S(?:.*?\S)?)\1/g, "$2")
+      .replace(/(\*\*|\*|~~)(\S(?:.*?\S)?)\1/g, "$2")
+      // _ and __ only count as emphasis at word boundaries, so snake_case names stay intact.
+      .replace(/(^|[^\p{L}\p{N}_])(__?)(\S(?:.*?\S)?)\2(?![\p{L}\p{N}_])/gu, "$1$3")
       .replace(/\s+/g, " ").trim();
     if (!/[\p{L}\p{N}]/u.test(line)) continue;
     const full = secretCheck(line.slice(0, 2000));

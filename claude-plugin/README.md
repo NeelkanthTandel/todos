@@ -22,7 +22,9 @@ Needs Node 18 or later on the machine running Claude Code.
 
 The connection is saved in `~/.config/todos/connection.json` (readable only by you). Each machine gets its own code, and the board lists connected machines with a **Disconnect** button. `/todos:disconnect` forgets the connection on this machine.
 
-The code contains your board's encryption key and this machine's writer token. Running `/todos:connect` puts it in that one conversation (and its local transcript), so treat that conversation like the config file. Disconnect the machine from the board if a code leaks.
+The code contains your board's encryption key and this machine's writer token. It's typed as a command argument, so it becomes part of that conversation: it goes to the model provider along with the rest of the conversation, and it stays in the local transcript. Treat that conversation like the config file, and disconnect the machine from the board if a code leaks.
+
+**Only use codes from your own board.** A code decides where your session titles and project names go: a code someone else gives you would send them to their relay and their board.
 
 **Cloud sessions** start from a fresh container, so a saved connection doesn't carry over. Set the environment variable `TODOS_CONNECTION=<code>` in your cloud environment's settings instead.
 
@@ -32,20 +34,23 @@ One small encrypted message per hook event, to your board's inbox:
 
 | Hook | Message |
 | --- | --- |
-| `SessionStart` | `start` |
+| `SessionStart` | `start` (nothing after compaction) |
 | First `UserPromptSubmit` | `suggest`, with a title |
-| Later `UserPromptSubmit` | `running` |
-| `Notification` | `needs_you` (not for `auth_success`) |
+| Later `UserPromptSubmit` | `running` (also the first one after `--resume`) |
+| `Notification` | `needs_you`, only when Claude is waiting on you: `permission_prompt`, `elicitation_dialog`, `elicitation_url_dialog`, `agent_needs_input` |
 | `Stop` | `your_turn` |
 | `SessionEnd` | `ended` |
 
-Each also carries the session id, the project name (the git repo's folder name, never the full path), whether it's a cloud or local session, and the time.
+Each also carries the session id, the project name (the git repo's folder name for the folder the session started in, never the full path), whether it's a cloud or local session, and the time.
+
+A small marker file per session in `~/.config/todos/sessions/` remembers which sessions were already suggested, so a resumed session isn't suggested twice. Markers older than a week are removed.
 
 The **title** is the first meaningful line of your first prompt, with Markdown and code removed, cut to 80 characters. It goes through the same secret filter the website uses for clipboard suggestions (`scripts/clipboard.cjs` is a copy of `public/clipboard.js`); if anything looks like a key, token, password or card number, no title is sent and the board shows "Untitled session in <project>". Nothing else from your prompts, code or files is sent. Prompts starting with `/todos:` are never sent.
 
 ## Opting out
 
-- A `.todos-ignore` file in a project's root: nothing is sent for sessions there.
+- A `.todos-ignore` file in a project's root: nothing is sent for sessions there. A session that starts in an ignored project stays ignored if Claude later moves to another folder, and so does one that moves into an ignored project.
+- `claude -p` and Agent SDK runs are skipped: scripted runs aren't sessions you'd pick up. They're detected by `CLAUDE_CODE_ENTRYPOINT` starting with `sdk-`. Claude Code sets that variable but doesn't document it, so if an app built on the Agent SDK should show up, set `TODOS_SDK=1` there.
 - `TODOS_DISABLE=1` in the environment: nothing is sent at all.
 - Not connected: the hooks do nothing.
 

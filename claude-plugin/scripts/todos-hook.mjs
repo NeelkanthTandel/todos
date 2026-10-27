@@ -12,6 +12,8 @@ process.on("unhandledRejection", () => process.exit(0));
 setTimeout(() => process.exit(0), 4000).unref();
 
 const EVENTS = { start: "start", prompt: null, notification: "needs_you", stop: "your_turn", end: "ended" };
+// Notifications that mean Claude is waiting on you. idle_prompt, auth_success, agent_completed and the rest don't.
+const NEEDS_YOU = new Set(["permission_prompt", "elicitation_dialog", "elicitation_url_dialog", "agent_needs_input"]);
 const SESSION_RE = /^[\w-]{1,64}$/;
 const STALE = 7 * 864e5;
 
@@ -22,7 +24,10 @@ function readStdin(max = 1 << 20, wait = 1500) {
     const finish = () => { if (!done) { done = true; resolve(buf); } };
     setTimeout(finish, wait).unref();
     process.stdin.setEncoding("utf8");
-    process.stdin.on("data", d => { buf += d; if (buf.length > max) { buf = ""; finish(); } });
+    process.stdin.on("data", d => {
+      buf += d;
+      if (buf.length > max) { buf = ""; process.stdin.destroy(); finish(); } // too big to be hook input
+    });
     process.stdin.on("end", finish);
     process.stdin.on("error", finish);
   });
@@ -31,6 +36,9 @@ function readStdin(max = 1 << 20, wait = 1500) {
 async function main() {
   const which = process.argv[2];
   if (!(which in EVENTS) || process.env.TODOS_DISABLE === "1") return;
+  // claude -p and Agent SDK runs (entrypoint sdk-cli, sdk-ts, sdk-py) are scripts, not sessions you'd pick up.
+  // The variable isn't in Claude Code's docs, so TODOS_SDK=1 turns this off if an SDK-based app needs it.
+  if (/^sdk-/.test(process.env.CLAUDE_CODE_ENTRYPOINT || "") && process.env.TODOS_SDK !== "1") return;
   const { loadConnection, projectRoot, projectName, titleFrom, send, configDir } = await import("./lib.mjs");
   const fs = await import("node:fs");
   const path = await import("node:path");
@@ -43,31 +51,50 @@ async function main() {
   const sessionId = input.session_id;
   if (typeof sessionId !== "string" || !SESSION_RE.test(sessionId)) return;
 
-  const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : process.env.CLAUDE_PROJECT_DIR || process.cwd();
-  const root = projectRoot(cwd);
-  if (fs.existsSync(path.join(root, ".todos-ignore")) || fs.existsSync(path.join(cwd, ".todos-ignore"))) return;
+  // The folder the session started in: input.cwd follows Claude's cd, CLAUDE_PROJECT_DIR stays put.
+  const cwd = typeof input.cwd === "string" && input.cwd ? input.cwd : "";
+  const base = process.env.CLAUDE_PROJECT_DIR || cwd || process.cwd();
+  const root = projectRoot(base);
 
-  // "First prompt of this session" is a small marker file per session id, removed when the session ends.
+  // One small marker file per session id: it exists once the session has been suggested, and says "ignored"
+  // for a session that started in an ignored project, so it stays ignored after a cd elsewhere.
   const dir = path.join(configDir(), "sessions");
   const marker = path.join(dir, sessionId);
+  const mark = (content, flag) => {
+    try {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.writeFileSync(marker, content, { mode: 0o600, flag });
+      return true;
+    } catch { return false; }
+  };
+  let seen = null;
+  try { seen = fs.readFileSync(marker, "utf8"); } catch {}
+  if (seen === "ignored") return;
+  const ignored = [root, base, ...(cwd ? [projectRoot(cwd), cwd] : [])]
+    .some(d => fs.existsSync(path.join(d, ".todos-ignore")));
+  if (ignored) { mark("ignored", "w"); return; }
+
   const msg = { event: EVENTS[which] };
   if (which === "prompt") {
     const prompt = typeof input.prompt === "string" ? input.prompt : "";
     if (/^\s*\/todos:/.test(prompt)) return; // connecting or disconnecting isn't a task (and holds the pairing code)
-    let first = false;
-    try {
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-      fs.closeSync(fs.openSync(marker, "wx", 0o600));
-      first = true;
-    } catch {}
-    if (first) { msg.event = "suggest"; msg.title = titleFrom(prompt); }
-    else msg.event = "running";
+    if (mark("", "wx")) { msg.event = "suggest"; msg.title = titleFrom(prompt); }
+    else {
+      msg.event = "running";
+      try { const t = new Date(); fs.utimesSync(marker, t, t); } catch {} // still active: keep it out of the sweep
+    }
   } else if (which === "notification") {
-    if (input.notification_type === "auth_success") return;
+    if (!NEEDS_YOU.has(input.notification_type)) return;
   } else if (which === "end") {
-    try { fs.unlinkSync(marker); } catch {}
+    // Keep the marker so a resumed session (same id) isn't suggested again; the weekly sweep at
+    // SessionStart removes it later.
+    // After /clear the conversation continues under a new id, so this one is done.
+    if (input.reason === "clear") { try { fs.unlinkSync(marker); } catch {} }
   } else if (which === "start") {
-    // Sweep markers left behind by sessions that never reached SessionEnd (crashes, killed terminals).
+    if (input.source === "compact") return; // same session, mid-task: "start" would wrongly say it's your turn
+    // A resumed session was suggested before (or predates the connection): its next prompt is just "running".
+    if (input.source === "resume") mark("", "wx");
+    // Sweep markers older than a week (resumed sessions, crashes, killed terminals).
     try {
       for (const f of fs.readdirSync(dir)) {
         const p = path.join(dir, f);
